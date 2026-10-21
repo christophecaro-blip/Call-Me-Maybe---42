@@ -14,9 +14,15 @@ def init_llm():
     print(f"Time to instantiate model : {elapsed:.1f}")
 
     encoded = model.encode("What is the sum of 4 and 5 ?")[0].tolist()
-    print(f"Encoded: {encoded}")
-    logits: list[float] = model.get_logits_from_input_ids(encoded)
-    print(logits)
+    for _ in range(12):
+        print(f"Encoded: {encoded}")
+        logits: list[float] = model.get_logits_from_input_ids(encoded)
+        max_id = logits.index(max(logits))
+        print(f"Token ID: {max_id}\nScore :{max(logits)}\nToken: {model.decode(max_id)}")
+        encoded.append(max_id)
+
+    completed_prompt = [model.decode(word) for word in encoded]
+    print(f"{completed_prompt}")
 
 
 if __name__ == "__main__":
