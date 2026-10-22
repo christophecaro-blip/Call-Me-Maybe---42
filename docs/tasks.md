@@ -57,6 +57,10 @@ Vue d'ensemble
 
 🔧 Étapes (dans un dossier `scratch/` non commité, ou un notebook)
 - [ ] Ajouter `scratch/` au `.gitignore` et à l'`extend-exclude` de `.flake8` (sinon `make lint` l'analyse).
+- [ ] Un petit script par expérience (`01_load.py`, `02_generate.py`, `03_vocab.py`…) plutôt qu'un
+      seul `test.py` où l'on commente et décommente des blocs : chacun reste lisible et relançable.
+- [ ] Noter les réponses au fur et à mesure dans `scratch/notes.md` (ce sont les réponses au
+      critère « Terminé quand… » en fin de phase, et de la matière pour le README).
 - [ ] Instancier `Small_LLM_Model()` ; mesurer le **temps de chargement** (détail ci-dessous).
 - [ ] `encode("What is the sum of 265 and 345?")` renvoie un tensor `[1, n]` → vérifier que
       `encode(t)[0].tolist()` donne bien une `list[int]`. (détail ci-dessous)
@@ -64,8 +68,10 @@ Vue d'ensemble
       (sinon le chat template serait mal tokenisé).
 - [ ] Ouvrir `vocab.json` (`get_path_to_vocab_file()`) et `tokenizer.json`
       (`get_path_to_tokenizer_file()`, clé `added_tokens`) : nombre d'entrées de chacun ?
+      (détail ci-dessous)
 - [ ] Afficher token par token : retrouver `Ġ`, vérifier que les nombres sont découpés chiffre par chiffre.
 - [ ] Chercher des tokens « mixtes » : lister tous les tokens contenant `"` → combien ? lesquels ?
+      (détail ci-dessous)
 - [ ] `get_logits_from_input_ids(ids)` : longueur du vecteur ? **= taille du vocab ?** (noter l'écart ;
       détail ci-dessous).
 - [ ] Écrire une boucle **greedy non contrainte** de 40 tokens avec un prompt « réponds en JSON » :
@@ -199,9 +205,11 @@ Le modèle ne prédit qu'un token à la fois. Pour générer du texte, on boucle
 ```python
 for _ in range(max_tokens):
     logits = model.get_logits_from_input_ids(ids)   # 1. prédire
-    next_id = int(np.argmax(logits))                # 2. choisir (greedy)
+    next_id = int(np.argmax(logits))                # 2. choisir (greedy) : id du meilleur score
     ids.append(next_id)                             # 3. ajouter, puis recommencer
 ```
+
+(Détail de `np.argmax`, `np.argsort` et des slices dans concepts.md §11, « numpy ».)
 
 C'est **à l'étape 2** qu'interviendra le décodage contraint : avant l'argmax, on mettra à `-inf`
 les logits des tokens qui casseraient le JSON. Tout le projet se joue à cet endroit.
@@ -228,11 +236,12 @@ def main() -> None:
     print(f"ids ({len(ids)} tokens) : {ids}")
 
     start = time.perf_counter()
-    logits = np.array(model.get_logits_from_input_ids(ids))
+    logits = np.array(model.get_logits_from_input_ids(ids))  # list[float] → tableau numpy
     print(f"1 pas : {time.perf_counter() - start:.3f} s")
     print(f"Nombre de logits : {len(logits)}")
 
     # Les 5 tokens que le modèle juge les plus probables pour la suite
+    # argsort : ids triés par score croissant ; [::-1] : décroissant ; [:5] : les 5 premiers
     top5 = np.argsort(logits)[::-1][:5]
     for token_id in top5:
         print(token_id, repr(model.decode([int(token_id)])), logits[token_id])
@@ -246,11 +255,115 @@ if __name__ == "__main__":
 - [ ] Lire les 5 meilleurs candidats : sont-ils cohérents comme suite de la phrase ?
 - [ ] Ajouter `top5[0]` à `ids`, rappeler `get_logits_from_input_ids`, répéter 10 fois : c'est ta
       première boucle de génération. Que répond le modèle spontanément ?
+- [ ] Afficher **seulement la réponse générée**, en texte : mémoriser `prompt_len = len(ids)` avant
+      la boucle, puis `model.decode(ids[prompt_len:])`.
+      ⚠️ `[model.decode(i) for i in ids]` décode chaque id séparément et donne une **liste** de
+      morceaux ; `model.decode(ids)` décode toute la séquence et donne directement le **texte**.
 
 **À savoir dire en soutenance :** « `encode` transforme le texte en une liste d'ids via le
 tokenizer. `get_logits_from_input_ids` fait passer toute la séquence dans le réseau et renvoie un
 score par token du vocabulaire pour le token suivant. Générer, c'est répéter : prédire, choisir,
 ajouter. Mon décodage contraint agit entre la prédiction et le choix. »
+
+### Explorer `vocab.json` et `tokenizer.json`
+
+**Ne pas faire `print(f.read())`** : `tokenizer.json` fait environ 11 Mo, c'est illisible dans un
+terminal. Un JSON s'explore en le **chargeant** avec `json.load`, puis en regardant sa structure
+petit à petit.
+
+`scratch/03_vocab.py` :
+
+```python
+import json
+
+from llm_sdk import Small_LLM_Model
+
+model = Small_LLM_Model()
+
+with open(model.get_path_to_tokenizer_file(), encoding="utf-8") as f:
+    tok = json.load(f)
+
+print(tok.keys())                 # 1. quelles sont les grandes sections ?
+print(len(tok["added_tokens"]))   # 2. combien de tokens spéciaux ?
+print(tok["added_tokens"][:3])    # 3. à quoi ressemble une entrée ?
+
+with open(model.get_path_to_vocab_file(), encoding="utf-8") as f:
+    vocab: dict[str, int] = json.load(f)
+
+print(len(vocab), max(vocab.values()))
+```
+
+Questions à résoudre :
+- [ ] Combien d'entrées dans `vocab.json` ? Quel est le plus grand id ?
+- [ ] Combien de `added_tokens` ? Quels sont leurs ids, et sont-ils dans `vocab.json` ?
+- [ ] Additionner `len(vocab)` (question 1) et `len(tok["added_tokens"])` (question 2) : c'est le
+      nombre total de tokens connus du tokenizer. Le comparer avec `len(logits)` (taille du vecteur
+      renvoyé par `get_logits_from_input_ids`, quel que soit le prompt). Que représentent les ids
+      en trop, qui ont un score mais aucun token ? (La somme n'a de sens que si la question 2 a
+      montré que les tokens spéciaux ne sont pas déjà dans `vocab.json`.)
+- [ ] Retrouver dans `added_tokens` les ids de `<|im_start|>`, `<|im_end|>`, `<think>` et
+      `</think>` : ils serviront pour le format de conversation (étape suivante).
+
+**Tokens mixtes**, dans le même script :
+
+```python
+mixed = [t for t in vocab if '"' in t]
+print(len(mixed), mixed[:30])
+```
+
+- [ ] Combien de tokens contiennent `"` ?
+- [ ] Lesquels mélangent `"` avec `,`, `}` ou `:` ? Noter 2 ou 3 exemples : ce sont eux que le
+      décodeur contraint devra gérer (concepts §5 et §8).
+- [ ] Compter, pour chacun de ces caractères, combien de tokens le contiennent **en plus** de `"` :
+      ```python
+      for c in [",", "}", ":"]:
+          found = sorted([t for t in mixed if c in t], key=len)
+          print(c, len(found), found[:12])
+      ```
+      Repérer aussi `Ġ"` (espace + guillemet) et `\"` (guillemet échappé).
+      **Leçon :** le vocabulaire contient des centaines de tokens qui collent un guillemet à de la
+      ponctuation JSON ; le modèle les utilise volontiers, car un token fait le travail de plusieurs
+      caractères.
+
+**Exercice : le JSON reste-t-il valide ?**
+
+Situation : le décodeur génère la valeur d'une string et a déjà écrit `"shrek`. Le modèle propose
+un token mixte. Est-ce que le JSON reste valide ?
+
+Exemple résolu :
+
+| Token proposé | Texte obtenu | Valide ? | Pourquoi |
+|---|---|---|---|
+| `'":'` | `"shrek":` | ❌ | `"` ferme la string, mais `:` est interdit après une **valeur** en JSON : on n'en trouve qu'après une **clé** |
+
+- [ ] Remplir ce tableau dans `scratch/notes.md` :
+
+| Token proposé | Texte obtenu | Valide ? | Pourquoi |
+|---|---|---|---|
+| `'"'` | | | |
+| `':"'` | | | |
+| `'",'` | | | |
+| `'"}'` | | | |
+| `'\\"'` (`\"`) | | | |
+| `'Ġ"'` | | | |
+
+Indices :
+- **Ce qui suit la valeur dépend de la position.** Si `name` est le dernier paramètre de
+  `fn_greet`, le JSON attendu après la valeur est `"}}`. S'il y a un autre paramètre après, c'est
+  `", "...`.
+- **`\"` ne ferme pas la string** : c'est un guillemet *dans* le texte.
+- Certains tokens sont **valides seulement selon ce qui doit venir ensuite** : ce sont les plus
+  intéressants (concepts §8, ligne « Token `5,` / `"}` / `}}` »).
+
+✅ Exercice réussi quand tu peux énoncer la règle : un token est valide si et seulement si **tous**
+ses caractères respectent la grammaire, un par un (concepts §5). C'est la règle centrale du futur
+décodeur.
+
+**À savoir dire en soutenance :** « `vocab.json` associe chaque token BPE à son id ; les tokens
+spéciaux comme `<|im_start|>` sont à part, dans les `added_tokens` de `tokenizer.json`. Le modèle
+produit plus de logits qu'il n'y a de tokens réels : les ids sans token doivent être interdits.
+Beaucoup de tokens mélangent un guillemet et de la ponctuation JSON : un token n'est accepté que si
+chacun de ses caractères respecte la grammaire à la position courante. »
 
 🧠 concepts §2, §3, §4, §9.
 
