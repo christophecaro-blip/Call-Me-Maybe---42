@@ -29,6 +29,10 @@ def init_llm():
             f"id dans vocab: {token_id in vocab_ids}  "
             f"texte dans vocab: {content in vocab_texts}")
 
+    mixed = [t for t in vocab if '"' in t]
+    print(f"Len of mixed:{len(mixed)}")
+    print(mixed[:30])
+
 
 if __name__ == "__main__":
     init_llm()
