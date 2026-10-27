@@ -199,15 +199,17 @@ types, leur nombre de paramètres sont lus dans `functions_definition.json`. Le 
 
 | Méthode publique | Comportement réel | Conséquence pour nous |
 |---|---|---|
-| `Small_LLM_Model(model_name="Qwen/Qwen3-0.6B")` | télécharge (1re fois) et charge tokenizer + modèle ; device auto mps > cuda > cpu | chargement lent → une seule instance ; peut échouer (réseau) → `try/except` |
-| `encode(text)` | `torch.Tensor` **2-D** de forme `[1, n]`, `add_special_tokens=False` | convertir : `encode(t)[0].tolist()` → `list[int]` |
-| `decode(ids)` | **supprime les tokens spéciaux** | ne pas s'en servir pour construire la table id → texte des tokens spéciaux |
-| `get_logits_from_input_ids(ids)` | passage avant **complet** à chaque appel, **pas de KV-cache** ; renvoie `list[float]` du dernier token | coût ∝ longueur du prompt ; `np.asarray(..., dtype=np.float32)` |
-| `get_path_to_vocab_file()` | `vocab.json` (token BPE → id) | ne contient **que** les tokens BPE, pas les tokens spéciaux |
-| `get_path_to_merges_file()` | `merges.txt` | inutile pour nous |
-| `get_path_to_tokenizer_file()` | `tokenizer.json`, avec la liste `added_tokens` | source pour connaître les ids des tokens spéciaux |
+| `Small_LLM_Model(model_name="Qwen/Qwen3-0.6B", *, device=None, dtype=None, trust_remote_code=True)` | télécharge (1re fois) et charge tokenizer + modèle ; device auto mps > cuda > cpu ; `float16` sur GPU/MPS, `float32` sur CPU ; `device_map="auto"` sur cuda (nécessite `accelerate`) | chargement ~2,1 s (CPU, cache) → **une seule instance** ; peut échouer (réseau, disque) → `try/except` → `ModelError` |
+| `encode(text) -> Tensor` | `torch.Tensor` **2-D** de forme `[1, n]`, `add_special_tokens=False` ; les tokens spéciaux écrits **en entier** dans le texte sont reconnus (`<|im_start|>` → 151644), une balise mal écrite est découpée en texte ordinaire **sans erreur** | convertir : `encode(t)[0].tolist()` → `list[int]` ; balises du chat template en **constantes** |
+| `decode(ids) -> str` | `skip_special_tokens=True` : masque les 14 `added_tokens` marqués `special` (`<|im_start|>` → `''`), mais **affiche** les 12 autres (`<think>`, `<tool_call>`…) ; accepte `list[int]` ou `Tensor` (pas un `int` seul) | ne pas s'en servir pour la table id → texte des tokens spéciaux ; pour la réponse générée : `decode(ids[prompt_len:])`, jamais couper le texte décodé |
+| `get_logits_from_input_ids(ids) -> list[float]` | passage avant **complet** à chaque appel, **pas de KV-cache** ; renvoie **151 936** logits pour le token suivant (> 151 669 tokens connus : 267 ids sans token) | coût croît avec la longueur (CPU : ~0,29 s pour 56 tokens, ~1,11 s pour 441) ; `np.asarray(..., dtype=np.float32)` ; masquer les ids sans token |
+| `get_path_to_vocab_file() -> str` | `vocab.json` (token BPE → id), **151 643** entrées, ids 0 → 151 642 | ne contient **que** les tokens BPE, pas les tokens spéciaux |
+| `get_path_to_merges_file() -> str` | `merges.txt` | inutile pour nous |
+| `get_path_to_tokenizer_file() -> str` | `tokenizer.json`, avec la liste `added_tokens` : **26** entrées, ids 151 643 → 151 668, champ `special` | source pour connaître les ids des tokens spéciaux ; **tous** à interdire pendant la génération |
 
-Tout ce qui commence par `_` (`_tokenizer`, `_model`, `_device`…) est **interdit** d'usage.
+Attributs **privés**, interdits d'usage : `_model_name`, `_device`, `_dtype`, `_tokenizer`, `_model`.
+Conséquence : on ne peut pas savoir par l'API publique si le modèle tourne sur CPU ou GPU, ni
+appeler directement le tokenizer Hugging Face. Tout passe par les 7 membres publics ci-dessus.
 
 Comme le SDK est un vrai paquet (`pyproject.toml` + hatchling), on le déclare dans **notre**
 `pyproject.toml` comme dépendance locale :

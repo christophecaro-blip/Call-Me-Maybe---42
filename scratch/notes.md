@@ -249,3 +249,128 @@ Un appel à `get_logits_from_input_ids`, après warm-up, 5 mesures (CPU) :
 | Forme de `encode` | tensor `[1, n]` → `[0].tolist()` → `list[int]` |
 | Signification de `Ġ` | espace devant le token |
 | Exemple de token mixte | `",` · `"}}` · `Ġ":` |
+
+# Phase 2 — Modèles de données
+
+## 10. Lire la structure de `functions_definition.json`
+
+```json
+{
+  "name": "fn_add_numbers",
+  "description": "Add two numbers together and return their sum.",
+  "parameters": {
+    "a": {"type": "number"},
+    "b": {"type": "number"}
+  },
+  "returns": {"type": "number"}
+}
+```
+
+Il y a **deux niveaux** à ne pas mélanger :
+- le niveau **fonction** (ce que décrit le fichier) : `name`, `description`, `parameters`, `returns` ;
+- le niveau **appel** (ce que le LLM produira) : `a = 2`, `b = 3`. C'est là qu'apparaissent les `int`/`float`.
+
+**Q1. Quels champs a une fonction, et quels sont leurs types Python ?**
+- Ma réponse : ~~a et b, de type int ou float~~ → ça, ce sont les **paramètres** de *cette* fonction,
+  et `int`/`float` sont les types des **valeurs au moment de l'appel** (phase 6+).
+- ✅ Correction : une fonction a 4 champs :
+
+| Champ | Exemple | Type Python après `json.load` |
+|---|---|---|
+| `name` | `"fn_add_numbers"` | `str` |
+| `description` | `"Add two numbers…"` | `str` |
+| `parameters` | `{"a": {"type": "number"}, …}` | `dict[str, dict]` |
+| `returns` | `{"type": "number"}` | `dict` |
+
+**Q2. `parameters` : liste ou dictionnaire ? Clés / valeurs ?**
+- Ma réponse : dict, clés `a`/`b`, valeurs `number` → presque.
+- ✅ Correction : c'est un **dict**. Les clés sont les **noms des paramètres** (`str`). Les valeurs ne sont **pas**
+  `"number"`, mais un **objet** `{"type": "number"}`. Il y a un niveau d'imbrication de plus.
+  En pydantic : `parameters: dict[str, ParameterSpec]`.
+- Conséquence : un dict garde l'ordre d'insertion (Python ≥ 3.7). L'ordre `a` puis `b` est donc conservé, et
+  ce sera l'ordre des clés forcées dans le JSON généré.
+
+**Q3. `{"type": ...}` apparaît dans un paramètre ET dans `returns` : conclusion ?**
+- Ma réponse : nécessaire pour ces 2 champs → c'est vrai, mais il faut aller plus loin.
+- ✅ Correction : c'est la **même forme** aux deux endroits, donc **une seule classe** (`ParameterSpec`)
+  sert pour les deux : `parameters: dict[str, ParameterSpec]` et `returns: ParameterSpec`.
+  C'est le principe DRY (*Don't Repeat Yourself*) : si la forme évolue, on ne la change qu'à un endroit.
+
+**Q4. Quels types dans le fichier ? Lesquels en correction ?**
+- ✅ Dans le fichier : seulement `"number"` et `"string"` (vérifiable sur les 5 fonctions).
+- Possibles en correction (architecture §5, « Les données d'entrée ») : `"integer"`, `"boolean"`.
+  Ce sont les types de base de JSON Schema, la norme dont s'inspire ce format.
+- Correspondance avec Python (utile en phase 6+) :
+
+| `type` JSON | Valeur Python attendue | Exemple généré |
+|---|---|---|
+| `number` | `float` | `2.0`, `-3.5` |
+| `integer` | `int` | `42` |
+| `string` | `str` | `"shrek"` |
+| `boolean` | `bool` | `true` / `false` |
+
+---
+
+## 11. Les modèles pydantic (`src/models.py`, testés dans `scratch/07_models.py`)
+
+Lancer avec `uv run python -m scratch.07_models` depuis la racine. Avec `python scratch/07_models.py`,
+Python cherche les imports dans `scratch/` et `from src.models import ...` lève `ModuleNotFoundError`.
+
+### Les 4 classes
+
+| Classe | Représente | Champs |
+|---|---|---|
+| `ParameterSpec` | `{"type": "number"}` | `type: ParamType` |
+| `FunctionDefinition` | une fonction de `functions_definition.json` | `name`, `description`, `parameters: dict[str, ParameterSpec]`, `returns: ParameterSpec` |
+| `PromptItem` | un élément de `function_calling_tests.json` | `prompt: str` |
+| `FunctionCall` | une ligne du fichier de sortie | `prompt`, `name`, `parameters: dict[str, float \| int \| str \| bool]` |
+
+- `ParamType = Literal["number", "string", "integer", "boolean"]` est un **alias de type** : il fixe une
+  liste fermée de valeurs. `"banana"` est refusé dès le chargement (*fail fast*). On met les 4 types
+  car la correction peut utiliser d'autres fichiers. Chaque type listé devra être générable en phase 5.
+- **Le nom de l'attribut = la clé du JSON.** Avec `return_val` au lieu de `returns`, on obtient `Field required`.
+- `prompt: str` est une **annotation** (un champ). `prompt = str` est une **affectation**, refusée par pydantic.
+- `model_validate`, `model_dump`… viennent de `BaseModel` par **héritage**. `model_validate` est une
+  méthode de **classe** : elle fabrique un objet à partir d'un dict.
+
+### Compréhension de liste
+
+```python
+functions = []                                   # équivaut à :
+for elem in raw_functions:                       # [FunctionDefinition.model_validate(elem)
+    functions.append(FunctionDefinition.model_validate(elem))  #  for elem in raw_functions]
+```
+Ce qui était dans `append(...)` passe à gauche. Cette expression doit **utiliser `elem`**.
+
+### Format des erreurs pydantic
+
+| Cas testé | Chemin affiché | Type d'erreur |
+|---|---|---|
+| `"type": "banana"` (test 4) | `parameters.a.type` | `literal_error` (+ liste des valeurs permises) |
+| `description` supprimée (test 5) | `description` | `missing` (`Field required`) |
+
+- Pydantic liste **toutes** les erreurs d'un coup, avec le chemin complet dans la structure imbriquée.
+- En phase 2, `io_utils.py` attrapera `ValidationError` et le convertira en `InputFileError`
+  (nom du fichier + ce message), sans traceback.
+
+### Ce que pydantic ne vérifie PAS
+
+- `FunctionCall(parameters={"a": 2})` est accepté et **reste `int`** : pydantic en mode « smart » garde le
+  type exact quand il est dans l'union. `"deux"` serait accepté aussi, car `str` est dans l'union.
+- Raison : `FunctionCall` ne connaît pas la `FunctionDefinition` correspondante. Le lien
+  « `a` est déclaré `number`, donc `float` » est **mon travail en phase 6** (conversion après génération).
+- Piège pour la phase 6 : `isinstance(True, int)` vaut `True` (`bool` est une sous-classe d'`int`).
+  Il faut tester `bool` **avant** `int`.
+- Question de soutenance : « Pourquoi pydantic ne suffit-il pas à garantir les types de la sortie ? »
+
+### Aliasing et `deepcopy`
+
+```python
+a = {"x": 1}
+b = a            # pas une copie : un 2e nom pour le MÊME dict
+b["x"] = 99      # → a vaut aussi {"x": 99}
+```
+- Observé : sans copie, le `"banana"` du test 4 réapparaissait dans le test 5.
+- `copy.copy` ne copie que le **1er niveau** : les dicts imbriqués (`parameters`) restent partagés.
+  `copy.deepcopy` copie **tous** les niveaux.
+- Règle : faire la copie **avant de modifier**. Une copie faite après la modification copie les dégâts.

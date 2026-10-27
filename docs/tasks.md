@@ -36,9 +36,9 @@ Vue d'ensemble
       dev : `uv add --dev flake8 mypy pytest`.
 - [x] Déclarer le SDK : `uv add --editable ./llm_sdk` (ce qui écrit le bloc `[tool.uv.sources]`
       de concepts §11). Vérifier le `pyproject.toml` obtenu.
-- [ ] Lire `llm_sdk/llm_sdk/__init__.py` en entier et lister ses méthodes **publiques**
+- [x] Lire `llm_sdk/llm_sdk/__init__.py` en entier et lister ses méthodes **publiques**
       (tableau dans architecture §5).
-- [ ] Créer l'arborescence `src/` de `architecture.md` avec des modules vides + `__main__.py`
+- [x] Créer l'arborescence `src/` de `architecture.md` avec des modules vides + `__main__.py`
       qui affiche juste « ok ».
 - [x] `.gitignore` : `.venv/`, `__pycache__/`, `.mypy_cache/`, `.pytest_cache/`, `data/output/`.
 - [x] `.flake8` + `[tool.mypy]` : exclure `.venv` et `llm_sdk`.
@@ -377,13 +377,13 @@ forme de `encode`, signification de `Ġ`, exemple de token mixte.
 🎯 Tout le « plombier » du programme, testable sans charger le modèle.
 
 🔧 Étapes
-- [ ] `models.py` : `ParameterSpec`, `FunctionDefinition`, `PromptItem`, `FunctionCall`
+- [x] `models.py` : `ParameterSpec`, `FunctionDefinition`, `PromptItem`, `FunctionCall`
       (pydantic). Calquer sur le **vrai** `functions_definition.json`.
-- [ ] `errors.py` : `CallMeMaybeError` (base) → `InputFileError`, `ModelError`, `DecodingError`.
+- [x] `errors.py` : `CallMeMaybeError` (base) → `InputFileError`, `ModelError`, `DecodingError`.
 - [ ] `cli.py` : argparse avec `--functions_definition`, `--input`, `--output` et leurs valeurs
       par défaut (`data/input/functions_definition.json`, `data/input/function_calling_tests.json`,
       `data/output/function_calling_results.json`) → `CliConfig` pydantic.
-- [ ] `io_utils.py` :
+- [x] `io_utils.py` :
   - `load_functions(path) -> list[FunctionDefinition]`
   - `load_prompts(path) -> list[PromptItem]`
   - `write_results(path, calls) -> None` (crée le dossier parent, `json.dump(..., indent=2, ensure_ascii=False)`)
