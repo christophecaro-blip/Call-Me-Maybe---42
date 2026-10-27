@@ -29,21 +29,21 @@ Vue d'ensemble
 🎯 Un squelette qui s'installe, se lance et passe le lint.
 
 🔧 Étapes
-- [ ] Copier `attachments_project_ai/llm_sdk/` → `./llm_sdk/` et
+- [x] Copier `attachments_project_ai/llm_sdk/` → `./llm_sdk/` et
       `attachments_project_ai/data/input/` → `./data/input/`. Ensuite, supprimer
       `attachments_project_ai/` (ou l'ajouter au `.gitignore`) pour ne pas avoir de doublon dans le dépôt.
-- [ ] `uv init` avec `requires-python = ">=3.10"` ; `uv add numpy pydantic` ;
+- [x] `uv init` avec `requires-python = ">=3.10"` ; `uv add numpy pydantic` ;
       dev : `uv add --dev flake8 mypy pytest`.
-- [ ] Déclarer le SDK : `uv add --editable ./llm_sdk` (ce qui écrit le bloc `[tool.uv.sources]`
+- [x] Déclarer le SDK : `uv add --editable ./llm_sdk` (ce qui écrit le bloc `[tool.uv.sources]`
       de concepts §11). Vérifier le `pyproject.toml` obtenu.
 - [ ] Lire `llm_sdk/llm_sdk/__init__.py` en entier et lister ses méthodes **publiques**
       (tableau dans architecture §5).
 - [ ] Créer l'arborescence `src/` de `architecture.md` avec des modules vides + `__main__.py`
       qui affiche juste « ok ».
-- [ ] `.gitignore` : `.venv/`, `__pycache__/`, `.mypy_cache/`, `.pytest_cache/`, `data/output/`.
-- [ ] `.flake8` + `[tool.mypy]` : exclure `.venv` et `llm_sdk`.
-- [ ] `Makefile` : `install`, `run`, `debug`, `clean`, `lint`, `lint-strict` (flags exacts du sujet).
-- [ ] Premier commit.
+- [x] `.gitignore` : `.venv/`, `__pycache__/`, `.mypy_cache/`, `.pytest_cache/`, `data/output/`.
+- [x] `.flake8` + `[tool.mypy]` : exclure `.venv` et `llm_sdk`.
+- [x] `Makefile` : `install`, `run`, `debug`, `clean`, `lint`, `lint-strict` (flags exacts du sujet).
+- [x] Premier commit.
 
 🧠 concepts §11.
 
@@ -55,30 +55,30 @@ Vue d'ensemble
 
 🎯 Voir de tes yeux ce que sont tokens, ids, logits. Cette phase évite 80 % des mauvaises surprises.
 
-🔧 Étapes (dans un dossier `scratch/` non commité, ou un notebook)
-- [ ] Ajouter `scratch/` au `.gitignore` et à l'`extend-exclude` de `.flake8` (sinon `make lint` l'analyse).
-- [ ] Un petit script par expérience (`01_load.py`, `02_generate.py`, `03_vocab.py`…) plutôt qu'un
+🔧 Étapes (dans un dossier `scratch/` commité avec le reste, mais exclu du lint)
+- [x] Ajouter `scratch/` à l'`extend-exclude` de `.flake8` et à l'`exclude` de `[tool.mypy]` (sinon `make lint` l'analyse).
+- [x] Un petit script par expérience (`01_load.py`, `02_generate.py`, `03_vocab.py`…) plutôt qu'un
       seul `test.py` où l'on commente et décommente des blocs : chacun reste lisible et relançable.
-- [ ] Noter les réponses au fur et à mesure dans `scratch/notes.md` (ce sont les réponses au
+- [x] Noter les réponses au fur et à mesure dans `scratch/notes.md` (ce sont les réponses au
       critère « Terminé quand… » en fin de phase, et de la matière pour le README).
-- [ ] Instancier `Small_LLM_Model()` ; mesurer le **temps de chargement** (détail ci-dessous).
-- [ ] `encode("What is the sum of 265 and 345?")` renvoie un tensor `[1, n]` → vérifier que
+- [x] Instancier `Small_LLM_Model()` ; mesurer le **temps de chargement** (détail ci-dessous).
+- [x] `encode("What is the sum of 265 and 345?")` renvoie un tensor `[1, n]` → vérifier que
       `encode(t)[0].tolist()` donne bien une `list[int]`. (détail ci-dessous)
-- [ ] Vérifier que `encode("<|im_start|>user")` produit **un seul** id pour `<|im_start|>`
+- [x] Vérifier que `encode("<|im_start|>user")` produit **un seul** id pour `<|im_start|>`
       (sinon le chat template serait mal tokenisé).
-- [ ] Ouvrir `vocab.json` (`get_path_to_vocab_file()`) et `tokenizer.json`
+- [x] Ouvrir `vocab.json` (`get_path_to_vocab_file()`) et `tokenizer.json`
       (`get_path_to_tokenizer_file()`, clé `added_tokens`) : nombre d'entrées de chacun ?
       (détail ci-dessous)
-- [ ] Afficher token par token : retrouver `Ġ`, vérifier que les nombres sont découpés chiffre par chiffre.
-- [ ] Chercher des tokens « mixtes » : lister tous les tokens contenant `"` → combien ? lesquels ?
+- [x] Afficher token par token : retrouver `Ġ`, vérifier que les nombres sont découpés chiffre par chiffre.
+- [x] Chercher des tokens « mixtes » : lister tous les tokens contenant `"` → combien ? lesquels ?
       (détail ci-dessous)
-- [ ] `get_logits_from_input_ids(ids)` : longueur du vecteur ? **= taille du vocab ?** (noter l'écart ;
+- [x] `get_logits_from_input_ids(ids)` : longueur du vecteur ? **= taille du vocab ?** (noter l'écart ;
       détail ci-dessous).
-- [ ] Écrire une boucle **greedy non contrainte** de 40 tokens avec un prompt « réponds en JSON » :
+- [x] Écrire une boucle **greedy non contrainte** de 40 tokens avec un prompt « réponds en JSON » :
       observer le résultat (thinking ? prose ? JSON cassé ?). Garde la sortie : elle servira
       dans le README (« Challenges » : pourquoi le prompting seul ne suffit pas).
-- [ ] Refaire avec le chat template Qwen3 + `<think>\n\n</think>\n\n` : différence ?
-- [ ] Mesurer le temps d'un appel de logits pour un prompt de 50 puis 400 tokens.
+- [x] Refaire avec le chat template Qwen3 + `<think>\n\n</think>\n\n` : différence ?
+- [x] Mesurer le temps d'un appel de logits pour un prompt de 50 puis 400 tokens.
 
 ### Étape 1 en détail : instancier `Small_LLM_Model()`
 
@@ -251,11 +251,11 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] Lancer le script : noter le nombre d'ids, la durée d'un pas, le nombre de logits.
+- [x] Lancer le script : noter le nombre d'ids, la durée d'un pas, le nombre de logits.
 - [ ] Lire les 5 meilleurs candidats : sont-ils cohérents comme suite de la phrase ?
-- [ ] Ajouter `top5[0]` à `ids`, rappeler `get_logits_from_input_ids`, répéter 10 fois : c'est ta
+- [x] Ajouter `top5[0]` à `ids`, rappeler `get_logits_from_input_ids`, répéter 10 fois : c'est ta
       première boucle de génération. Que répond le modèle spontanément ?
-- [ ] Afficher **seulement la réponse générée**, en texte : mémoriser `prompt_len = len(ids)` avant
+- [x] Afficher **seulement la réponse générée**, en texte : mémoriser `prompt_len = len(ids)` avant
       la boucle, puis `model.decode(ids[prompt_len:])`.
       ⚠️ `[model.decode(i) for i in ids]` décode chaque id séparément et donne une **liste** de
       morceaux ; `model.decode(ids)` décode toute la séquence et donne directement le **texte**.
@@ -294,14 +294,14 @@ print(len(vocab), max(vocab.values()))
 ```
 
 Questions à résoudre :
-- [ ] Combien d'entrées dans `vocab.json` ? Quel est le plus grand id ?
-- [ ] Combien de `added_tokens` ? Quels sont leurs ids, et sont-ils dans `vocab.json` ?
-- [ ] Additionner `len(vocab)` (question 1) et `len(tok["added_tokens"])` (question 2) : c'est le
+- [x] Combien d'entrées dans `vocab.json` ? Quel est le plus grand id ?
+- [x] Combien de `added_tokens` ? Quels sont leurs ids, et sont-ils dans `vocab.json` ?
+- [x] Additionner `len(vocab)` (question 1) et `len(tok["added_tokens"])` (question 2) : c'est le
       nombre total de tokens connus du tokenizer. Le comparer avec `len(logits)` (taille du vecteur
       renvoyé par `get_logits_from_input_ids`, quel que soit le prompt). Que représentent les ids
       en trop, qui ont un score mais aucun token ? (La somme n'a de sens que si la question 2 a
       montré que les tokens spéciaux ne sont pas déjà dans `vocab.json`.)
-- [ ] Retrouver dans `added_tokens` les ids de `<|im_start|>`, `<|im_end|>`, `<think>` et
+- [x] Retrouver dans `added_tokens` les ids de `<|im_start|>`, `<|im_end|>`, `<think>` et
       `</think>` : ils serviront pour le format de conversation (étape suivante).
 
 **Tokens mixtes**, dans le même script :
@@ -311,10 +311,10 @@ mixed = [t for t in vocab if '"' in t]
 print(len(mixed), mixed[:30])
 ```
 
-- [ ] Combien de tokens contiennent `"` ?
-- [ ] Lesquels mélangent `"` avec `,`, `}` ou `:` ? Noter 2 ou 3 exemples : ce sont eux que le
+- [x] Combien de tokens contiennent `"` ?
+- [x] Lesquels mélangent `"` avec `,`, `}` ou `:` ? Noter 2 ou 3 exemples : ce sont eux que le
       décodeur contraint devra gérer (concepts §5 et §8).
-- [ ] Compter, pour chacun de ces caractères, combien de tokens le contiennent **en plus** de `"` :
+- [x] Compter, pour chacun de ces caractères, combien de tokens le contiennent **en plus** de `"` :
       ```python
       for c in [",", "}", ":"]:
           found = sorted([t for t in mixed if c in t], key=len)
@@ -336,7 +336,7 @@ Exemple résolu :
 |---|---|---|---|
 | `'":'` | `"shrek":` | ❌ | `"` ferme la string, mais `:` est interdit après une **valeur** en JSON : on n'en trouve qu'après une **clé** |
 
-- [ ] Remplir ce tableau dans `scratch/notes.md` :
+- [x] Remplir ce tableau dans `scratch/notes.md` :
 
 | Token proposé | Texte obtenu | Valide ? | Pourquoi |
 |---|---|---|---|

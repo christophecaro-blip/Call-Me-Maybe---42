@@ -25,13 +25,18 @@ def init_llm():
     for entry in tok["added_tokens"]:
         token_id = entry["id"]
         content = entry["content"]
+        special = entry["special"]
         print(f"{token_id:>7}  {content!r:25}  "
+            f"special : {special!s:5}  "
             f"id dans vocab: {token_id in vocab_ids}  "
             f"texte dans vocab: {content in vocab_texts}")
 
     mixed = [t for t in vocab if '"' in t]
     print(f"Len of mixed:{len(mixed)}")
-    print(mixed[:30])
+    for c in [",", "}", ":"]:
+        found = sorted([t for t in mixed if c in t], key=len)
+        print(c, len(found), found[:12])
+
 
 
 if __name__ == "__main__":
