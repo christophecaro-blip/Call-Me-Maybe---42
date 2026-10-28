@@ -31,3 +31,8 @@ members = [
 
 [tool.uv.sources]
 llm-sdk = { workspace = true, editable = true }
+
+[tool.pytest.ini_options]
+# Run from the project root so tests can `import src...`.
+pythonpath = ["."]
+testpaths = ["tests"]
