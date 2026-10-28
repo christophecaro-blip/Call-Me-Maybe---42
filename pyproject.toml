@@ -18,6 +18,8 @@ dev = [
 
 [tool.mypy]
 exclude = ['^\.venv/', '^llm_sdk/', '^scratch/']
+# Find the real package (llm_sdk/llm_sdk), not the workspace folder.
+mypy_path = "llm_sdk"
 
 [[tool.mypy.overrides]]
 module = ["llm_sdk", "llm_sdk.*"]
