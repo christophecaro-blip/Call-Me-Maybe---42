@@ -374,3 +374,126 @@ b["x"] = 99      # → a vaut aussi {"x": 99}
 - `copy.copy` ne copie que le **1er niveau** : les dicts imbriqués (`parameters`) restent partagés.
   `copy.deepcopy` copie **tous** les niveaux.
 - Règle : faire la copie **avant de modifier**. Une copie faite après la modification copie les dégâts.
+
+---
+
+## 12. Erreurs et I/O (`src/errors.py`, `src/io_utils.py`) — rappel rapide
+
+- Hiérarchie : `CallMeMaybeError` → `InputFileError` · `ModelError` (le **LLM**, pas pydantic) · `DecodingError`.
+- **N'attraper que ce qu'on sait traiter.** `except CallMeMaybeError` = erreurs **prévues** (faute de
+  l'utilisateur) → message propre. Un bug (`KeyError`…) doit garder son traceback → jamais `except Exception`.
+- Traduction : on attrape l'erreur technique et on lève la nôtre, chaînée avec `raise InputFileError(f"{path}: {e}") from e`.
+- `_read_json_list(path, what)` (privée, `_`) factorise : `open` + `json.load` → vérifie une **liste** → **non vide**.
+  `load_functions` / `load_prompts` ne font plus que le `model_validate`.
+- `write_results` : `model_dump()` sur chaque appel → `mkdir(parents=True, exist_ok=True)` → `json.dump(..., indent=2, ensure_ascii=False)`.
+- `mkdir` : sans `parents` → `FileNotFoundError` ; 2ᵉ appel sans `exist_ok` → `FileExistsError`.
+  Les deux héritent d'`OSError` → un seul `except OSError` couvre `mkdir` + `open`. Opération **idempotente**.
+- `json.load(f)` lit (fichier → Python) ; `json.dump(obj, f)` écrit (Python → fichier, **objet d'abord**).
+  `json.dumps` renvoie une chaîne. `json` ne sait pas écrire un objet pydantic → `model_dump()` avant.
+
+---
+
+## 13. La ligne de commande (`src/cli.py`)
+
+**Rôle :** traduire les options tapées dans le terminal en un objet typé `CliConfig`.
+Il ne connaît que des **chemins**. Il ne vérifie pas que les fichiers existent : c'est le travail d'`io_utils`.
+
+| Entrée | Exemple | Module |
+|---|---|---|
+| options du terminal | `--input x.json` | `cli.py` → « **quels** fichiers ? » |
+| contenu des fichiers | `[{"prompt": ...}]` | `io_utils.py` → « **que contiennent**-ils ? » |
+
+Structure :
+- 3 constantes en MAJUSCULES `DEFAULT_FUNCTIONS`, `DEFAULT_INPUT`, `DEFAULT_OUTPUT`, qui désignent des **fichiers**
+  et non des dossiers (`open("data/output/", "w")` échoue).
+- `CliConfig(BaseModel)` : 3 champs `Path`. Typé, contrairement à `args` dont tous les attributs sont `Any`.
+- `parse_args(argv: list[str] | None = None) -> CliConfig` : un `add_argument` par option, avec `type=Path`, `default=`, `help=`.
+
+Ce qu'argparse fait tout seul :
+- **`--help` / `-h`** est généré à partir de `description` et des `help=`.
+- **Une option inconnue ou une valeur invalide** affiche l'usage et l'erreur, puis quitte avec le **code 2**.
+- **`type=`** : tout ce qui vient du terminal est du **texte**. `type=int` appelle `int("3")`, `type=Path` appelle `Path("x.json")`.
+  On passe la classe **sans parenthèses** (`type=Path`, pas `Path()`) : c'est argparse qui l'appelle.
+- **Sans `default=`**, une option absente vaut `None`. Bug rencontré : `CliConfig` refusait `None` au lieu de prendre le chemin par défaut.
+  flake8 ne le voit pas, seule l'**exécution** le révèle.
+- **`argv`** : `None` → argparse lit `sys.argv`. Une liste → on simule une ligne de commande, ce qui sert dans les tests.
+
+---
+
+## 14. Le point d'entrée (`src/__main__.py`)
+
+`python -m src` exécute `src/__main__.py`. C'est la porte d'entrée : elle **enchaîne** les modules et gère les erreurs **à un seul endroit**.
+
+```
+main()
+ ├─ parse_args()        → config
+ ├─ load_functions()    → functions        lecture
+ ├─ load_prompts()      → prompts          lecture
+ ├─ _fake_calls()       → calls            traitement (faux pipeline, remplacé en phase 6)
+ └─ write_results()                        écriture
+```
+
+- `_fake_calls` répond à chaque prompt avec la 1ʳᵉ fonction et `0.0` pour chaque paramètre.
+  Compréhension de **dict** : `{name: 0.0 for name in fn.parameters}`. Boucler sur un dict donne ses **clés**.
+  Piège évité : `fn.parameters` contient des `ParameterSpec` (des définitions), pas des valeurs.
+- `main() -> int` **renvoie** un code au lieu de quitter elle-même, ce qui la rend testable. `sys.exit(main())` le transmet au système.
+- `if __name__ == "__main__":` est vrai quand le fichier est **lancé**, pas quand il est **importé** (par un test, par exemple).
+- Erreurs : stdout est réservé aux résultats, **stderr** aux diagnostics (`print(..., file=sys.stderr)`).
+
+| Situation | Géré par | Code de sortie |
+|---|---|---|
+| succès | `return 0` dans le `try` | `0` |
+| `CallMeMaybeError` | `print(f"Error: {e}", file=sys.stderr)` | `1` |
+| mauvaise option | argparse | `2` |
+| Ctrl+C (`KeyboardInterrupt`) | message `Interrupted` | `130` |
+| bug imprévu | **non attrapé** → traceback | `1` (Python) |
+
+Vérifié à la main : `make run` → 11 entrées ; `--input nope.json` → `Error: nope.json: [Errno 2] ...`, code 1, sans traceback.
+
+Pièges rencontrés : `calls = load_prompts(config.output)` lisait le fichier de **sortie** au lieu de fabriquer les appels.
+L'ordre des arguments de `write_results(path, calls)` : la signature fait foi.
+F541 : une f-string sans `{}` ne doit pas avoir de `f`.
+
+---
+
+## 15. Les tests (`tests/`, lancer avec `uv run pytest -v`)
+
+Configuration ajoutée dans `pyproject.toml`. Sans elle, `import src` échoue pendant les tests :
+```toml
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+```
+
+Les bases de pytest :
+- pytest exécute toute fonction `test_*` d'un fichier `tests/test_*.py`. On vérifie avec un simple `assert`.
+- `with pytest.raises(Erreur, match="texte"):` réussit seulement si l'erreur est levée et que son message contient le texte.
+- Les **fixtures** sont des paramètres au nom réservé, que pytest remplit tout seul :
+  - `tmp_path` : un dossier temporaire vide, propre à chaque test, qui permet de créer de faux fichiers d'entrée ;
+  - `monkeypatch` : remplace temporairement une valeur, par exemple `sys.argv` pour simuler une ligne de commande ;
+  - `capsys` : capture stdout et stderr (`capsys.readouterr().err`).
+- Un test vérifie **un** comportement, et son nom dit lequel. S'il échoue, on sait tout de suite ce qui est cassé.
+
+| Fichier | Nb | Ce qui est vérifié |
+|---|---|---|
+| `test_io_utils.py` | 10 | vrais fichiers (5 / 11) · fichier absent · JSON cassé · pas une liste · liste vide · schéma invalide · `"banana"` (chemin `parameters.a.type`) · `write_results` crée les dossiers et garde `Zoé` · écriture impossible |
+| `test_cli.py` | 3 | valeurs par défaut · une option remplace seulement son défaut · option inconnue → `SystemExit` code 2 |
+| `test_models.py` | 4 | 4 types acceptés · `"banana"` refusé · ordre des paramètres conservé · `True` reste `bool`, `2` reste `int` |
+| `test_main.py` | 2 | run complet → code 0 + 11 entrées `{prompt, name, parameters}` · fichier absent → code 1, `Error:` sur stderr, pas de traceback |
+
+Résultat : **19 passed en 0,2 s.** Les fichiers `test_constraints.py`, `test_pipeline.py` et `test_vocabulary.py` sont vides, ils serviront aux phases 3 à 6.
+
+**Pourquoi des tests, même s'ils ne sont pas notés :** après chaque modification, `uv run pytest` vérifie en 0,2 s
+la dizaine de cas qu'on testait à la main. Ils détectent aussi des bugs que lint ne voit pas,
+comme une exception sans héritage ou un `default=` oublié.
+
+---
+
+## 16. Récapitulatif phase 2 « Terminé quand… » ✅
+
+| Critère | État |
+|---|---|
+| `make run` produit `data/output/function_calling_results.json` (faux contenu, vrai format) | ✅ 11 entrées |
+| chaque cas d'erreur affiche un message clair, sans traceback | ✅ codes 1 et 2 |
+| `make lint` | ✅ 0 erreur |
+| `uv run pytest` | ✅ 19 tests |

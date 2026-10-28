@@ -380,7 +380,7 @@ forme de `encode`, signification de `Ġ`, exemple de token mixte.
 - [x] `models.py` : `ParameterSpec`, `FunctionDefinition`, `PromptItem`, `FunctionCall`
       (pydantic). Calquer sur le **vrai** `functions_definition.json`.
 - [x] `errors.py` : `CallMeMaybeError` (base) → `InputFileError`, `ModelError`, `DecodingError`.
-- [ ] `cli.py` : argparse avec `--functions_definition`, `--input`, `--output` et leurs valeurs
+- [x] `cli.py` : argparse avec `--functions_definition`, `--input`, `--output` et leurs valeurs
       par défaut (`data/input/functions_definition.json`, `data/input/function_calling_tests.json`,
       `data/output/function_calling_results.json`) → `CliConfig` pydantic.
 - [x] `io_utils.py` :
@@ -389,11 +389,11 @@ forme de `encode`, signification de `Ġ`, exemple de token mixte.
   - `write_results(path, calls) -> None` (crée le dossier parent, `json.dump(..., indent=2, ensure_ascii=False)`)
   - chaque erreur (`FileNotFoundError`, `JSONDecodeError`, `ValidationError`, `OSError`)
     convertie en `InputFileError` avec un message lisible.
-- [ ] `__main__.py` : `main() -> int` ; un `try/except CallMeMaybeError` global → message sur
+- [x] `__main__.py` : `main() -> int` ; un `try/except CallMeMaybeError` global → message sur
       stderr, code 1 ; `KeyboardInterrupt` → code 130.
-- [ ] Brancher un **faux** pipeline : pour chaque prompt, sortir la 1re fonction avec des valeurs
+- [x] Brancher un **faux** pipeline : pour chaque prompt, sortir la 1re fonction avec des valeurs
       bidon → vérifie toute la chaîne entrée → sortie.
-- [ ] Tests pytest : fichier absent, JSON invalide, schéma invalide, liste vide.
+- [x] Tests pytest : fichier absent, JSON invalide, schéma invalide, liste vide.
 
 🧠 concepts §10.
 
