@@ -497,3 +497,244 @@ comme une exception sans héritage ou un `default=` oublié.
 | chaque cas d'erreur affiche un message clair, sans traceback | ✅ codes 1 et 2 |
 | `make lint` | ✅ 0 erreur |
 | `uv run pytest` | ✅ 19 tests |
+
+---
+
+# Phase 3 — Vocabulaire
+
+## 17. Encodage byte-level de GPT-2 (`scratch/09_bytes.py`)
+
+### Le problème
+
+Le décodage contraint doit savoir, pour **chaque** id, le texte exact qu'il ajoute à la sortie.
+`vocab.json` ne donne pas ce texte directement, mais une forme **encodée** :
+
+| Dans `vocab.json` | Texte réel |
+|---|---|
+| `Ġthe` | ` the` |
+| `Ċ` | `\n` |
+| `",` | `",` |
+| `Ã©` | `é` |
+
+### Bit, octet, UTF-8
+
+- **Bit** : 0 ou 1. **Octet** (byte) : 8 bits, soit 2⁸ = **256** valeurs (0 à 255).
+- **UTF-8** : un caractère occupe **1 à 4 octets**.
+  - ASCII (`a`, `"`, `,`, chiffres) → 1 octet ;
+  - `é` → 2 octets (`0xC3 0xA9`) ;
+  - chinois et japonais → 3 octets ;
+  - emojis → 4 octets.
+- Le tokenizer découpe des **octets**, pas des caractères. Il peut donc couper un caractère en deux.
+
+### La table `bytes_to_unicode()`
+
+- Elle associe **chacun des 256 octets** à un caractère unicode **imprimable**. C'est ce qui permet de stocker
+  n'importe quelle suite d'octets dans un JSON lisible.
+- Les octets déjà imprimables restent **identiques** : l'octet 97 (`ord("a")`) donne `'a'`.
+  Attention, 97 est la **clé**, `'a'` est la **valeur**.
+- Les octets non imprimables reçoivent `chr(256)`, `chr(257)`… **dans l'ordre**. Les octets 0 à 32 sont
+  les premiers concernés, d'où :
+  - l'espace (32) → `chr(256 + 32)` = `chr(288)` = **`Ġ`** ;
+  - `\n` (10) → `chr(256 + 10)` = `chr(266)` = **`Ċ`**.
+
+### Retrouver le texte réel
+
+```python
+byte_of = {c: b for b, c in bytes_to_unicode().items()}   # table inversée : caractère → octet
+raw = bytes(byte_of[c] for c in "Ġthe")                   # b' the'
+raw.decode("utf-8")                                       # ' the'
+```
+- `{v: k for k, v in d.items()}` inverse un dict. `.items()` donne les paires (clé, valeur).
+- `print(raw)` affiche `b' the'` ou `b'\xc3'` : c'est l'**affichage d'un objet `bytes`**, pas une adresse.
+  `\xc3` est l'octet 195 écrit en hexadécimal.
+- `"Ã©"`, c'est 2 caractères dans vocab.json, mais 2 octets qui forment **1** caractère : `é`.
+  La longueur d'un token dans vocab.json n'est pas la longueur de son texte.
+
+### Le piège : les fragments de caractères
+
+```python
+half = bytes(byte_of[c] for c in "Ã")     # b'\xc3' : seulement le 1er octet de é
+half.decode("utf-8")                      # UnicodeDecodeError: unexpected end of data
+half.decode("utf-8", errors="replace")    # '\ufffd' = '�'  → caractère INVENTÉ, pas le vrai texte
+```
+- `0xC3` annonce un caractère de 2 octets, mais les données s'arrêtent avant le 2ᵉ.
+- Un tel token, choisi seul, écrirait un octet orphelin : la sortie ne serait plus de l'UTF-8 valide. Il est donc **inutilisable**.
+
+### Résultats sur tout `vocab.json`
+
+- **150 195** tokens se décodent, **1 448** échouent (total 151 643 ✓).
+- **Aucune `KeyError`** : chaque caractère de vocab.json est dans la table. Ça prouve que tout le fichier utilise cet encodage.
+- Ce que sont les 1 448 tokens en échec :
+
+| Octets | Nature |
+|---|---|
+| `b'\xa1'`, `b'\xa2'`… seuls | octets de **continuation** (la fin d'un caractère sans son début) |
+| commençant par `0xe5`–`0xe8` (~270) | **débuts** de caractères chinois ou japonais |
+| commençant par `0xf0` (185) | **débuts** d'emojis |
+| commençant par `0x20` (199) | espace + début de caractère multi-octets |
+
+- **Réponse de soutenance, « et les caractères spéciaux ? »** On les exclut. Ce n'est pas gênant pour nos prompts
+  (anglais, chiffres, ponctuation : tout tient sur 1 octet et a des tokens complets). Même `é` reste possible,
+  via le token complet `Ã©`. **Limite assumée** : un caractère chinois ou un emoji qui n'existe qu'en fragments
+  ne peut pas être généré. Le gérer demanderait de suivre les octets incomplets d'un pas à l'autre.
+
+### Bilan des 151 936 ids → `id_to_text`
+
+| Catégorie | Nombre | Valeur |
+|---|---|---|
+| tokens décodables | 150 195 | le texte réel |
+| fragments UTF-8 | 1 448 | `None` |
+| added_tokens (`<\|im_end\|>`, `<think>`…) | 26 | `None` |
+| ids sans token (trous) | 267 | `None` |
+| **total = taille des logits** | **151 936** | |
+
+- Liste créée pleine de `None`, puis remplie **seulement** avec vocab.json. Les added_tokens et les trous restent `None`
+  **sans aucun code**, puisqu'ils ne sont pas dans vocab.json.
+- **`None` et pas `""`** : `None` = inutilisable, toujours refusé. `""` = « n'ajoute rien », donc **toujours accepté**
+  par le contrôle de validité. `<|im_end|>` ou `<think>` pourraient alors apparaître au milieu d'une valeur.
+  C'est le piège du `decode` du SDK, qui renvoie `""` pour les tokens spéciaux.
+
+## 18. La classe `Vocabulary` (`src/llm/vocabulary.py`)
+
+### Structure du fichier
+
+| Élément | Rôle |
+|---|---|
+| `_bytes_to_unicode()` | table GPT-2 : octet (0–255) → caractère imprimable (`32` → `Ġ`) |
+| `_decode_token(token, char_to_byte)` | token vocab.json → texte réel, ou `None` si fragment UTF-8 |
+| `Vocabulary(vocab_path, size)` | construit `id_to_text`, une case par logit |
+
+```python
+char_to_byte = {c: b for b, c in _bytes_to_unicode().items()}   # table inversée UNE fois
+self.id_to_text: list[str | None] = [None] * size               # 151 936 cases à None
+with open(vocab_path, encoding="utf-8") as f:
+    vocab_json = json.load(f)
+for token, token_id in vocab_json.items():
+    self.id_to_text[token_id] = _decode_token(token, char_to_byte)
+```
+
+- **Fonctions privées (`_`)** : détails internes du module, seule la classe est utilisée ailleurs.
+- **On inverse `_bytes_to_unicode()`**, pas vocab.json : on veut passer d'un caractère `Ġ` à son octet `32`.
+- **Pas de `if` dans la boucle** : `_decode_token` renvoie déjà `None` pour les fragments.
+- **`size` en paramètre** (151 936) et pas `len(vocab_json)` (151 643) : la liste doit avoir la taille des
+  **logits**, sinon `id_to_text[id]` plante pour les ids des added_tokens.
+- **Pas de `errors="replace"`** : il désactive l'exception et fabrique `�`, un fragment passerait pour du texte.
+- Vérifié : `id_to_text[279] == " the"`, **1 741** `None` (= 1 448 + 26 + 267 ✓).
+
+## 19. Vérification aller-retour (`scratch/10_vocab_key.py`)
+
+**Idée** : découper une phrase avec le **vrai** tokenizer (`model.encode`), puis recoller les textes de **notre** table.
+Si on retrouve la phrase exacte, la table est fidèle au modèle.
+
+```python
+ids = model.encode(s)[0].tolist()                 # tenseur 2D → 1re ligne → liste Python
+rebuilt = "".join(vocab.id_to_text[i] for i in ids)
+print(rebuilt == s, repr(s))
+```
+
+### Lire une compréhension dans un `join`
+
+`"".join(EXPR for VAR in ITERABLE)` se lit de droite à gauche : sur quoi on boucle, ce qu'on produit, puis le collage.
+Erreurs faites :
+- `for i in s` boucle sur les **caractères** de la phrase, pas sur les ids ;
+- `id_to_text` seul : c'est un **attribut** → `vocab.id_to_text` ;
+- `for id in ids` masque la fonction intégrée `id()` → préférer `i` ou `token_id`.
+
+### Résultats
+
+| Phrase | Résultat |
+|---|---|
+| `What is the sum of 2 and 3?`, JSON `fn_greet`, `Hello\nworld` | ✅ True |
+| `3.14 by -2.5`, `123456 + 789`, `\d+`, `Zoé`, `a  b   c`, `""`, `1e-5` | ✅ True |
+| `I love 🦀` | ❌ `TypeError: sequence item 2: expected str instance, NoneType found` |
+
+### Pourquoi l'emoji casse
+
+`"🦀".encode("utf-8") == b'\xf0\x9f\xa6\x80'` : **4 octets**, découpés par le tokenizer en 3 tokens :
+
+| id | token | octets | seul |
+|---|---|---|---|
+| 11162 | `ĠðŁ` | `b' \xf0\x9f'` | début d'emoji (+ espace) → `None` |
+| 99 | `¦` | `b'\xa6'` | continuation → `None` |
+| 222 | `Ģ` | `b'\x80'` | continuation → `None` |
+
+- Le vocabulaire travaille sur des **octets**, pas des caractères. Les morceaux ne redeviennent du texte qu'une fois recollés.
+- `"".join` refuse un `None` → `TypeError`.
+- **Conséquence** : en interdisant les ids `None`, le modèle ne peut pas écrire 🦀. **Sans impact pour nos prompts**
+  (anglais, chiffres, `é` est un token complet). **Limite assumée**, à mentionner dans le README.
+
+## 20. La façade `Engine` (`src/llm/engine.py`)
+
+**Règle** : seul `engine.py` importe `llm_sdk`. Le reste du programme parle à `Engine` avec des types simples.
+Les bizarreries du SDK sont gérées à un seul endroit, on peut remplacer `Engine` par un faux dans les tests,
+et l'architecture se défend facilement en soutenance.
+
+| Méthode `Engine` | Appelle (SDK) | Conversion |
+|---|---|---|
+| `encode(text) -> list[int]` | `encode(text)` → `torch.Tensor` 2D `[[...]]` | `[0]` (1re ligne du batch) puis `.tolist()` |
+| `next_logits(ids) -> np.ndarray` | `get_logits_from_input_ids(ids)` → `list[float]` | `np.array(..., dtype=np.float32)` |
+| attribut `vocab` | `get_path_to_vocab_file()` → `str` | `Path(...)` → `Vocabulary(path, size)` |
+
+```python
+self._model = Small_LLM_Model()
+size = len(self.next_logits(self.encode("Hello")))     # taille MESURÉE, jamais en dur
+vocab_path = Path(self._model.get_path_to_vocab_file())
+self.vocab = Vocabulary(vocab_path, size)
+```
+
+### Les logits
+
+- Un appel = **une note par token possible** (151 936 nombres) pour le token **suivant**.
+  Le SDK prend `out.logits[0, -1]`, la prédiction après le **dernier** token.
+- **Case `i` = token `i`** : `logits[i]` et `vocab.id_to_text[i]` parlent du même token, d'où la même taille.
+- Note haute = token probable. Génération libre : `argmax`. Décodage contraint (phase 4) : mettre `-inf`
+  sur les tokens interdits, **puis** `argmax`.
+- **Pourquoi numpy** : `logits[interdits] = -np.inf` et `np.argmax(logits)` traitent tout le tableau d'un coup,
+  ce qu'une `list` ne sait pas faire, et c'est bien plus rapide.
+- **`float32`** : 4 octets par note au lieu de 8 (`float64` par défaut), largement assez précis.
+
+### Pièges rencontrés
+
+- `next_logits` **n'est pas dans le SDK** : c'est notre méthode, une enveloppe autour de `get_logits_from_input_ids`.
+- `__init__` peut appeler `self.next_logits` écrite plus bas : la méthode est cherchée **à l'exécution**,
+  quand la classe est déjà entièrement définie.
+- `encode("Hello")` sans `self.` → `F821 undefined name`. Les autres méthodes passent toujours par `self`.
+- **`np.ndarray` et `np.array`** : `np.ndarray` est le **type** (utilisé dans `-> np.ndarray`), `np.array(data)`
+  est la **fonction** qui fabrique un tableau. `np.ndarray((3,))` crée un tableau non initialisé (valeurs au hasard).
+- Imports : stdlib (`pathlib`), puis externes (`numpy`, `llm_sdk`), puis projet, avec une ligne vide entre groupes.
+- **mypy** : `Module "llm_sdk" has no attribute "Small_LLM_Model"`. mypy prenait le **dossier** `llm_sdk/`
+  (le workspace) pour le package, au lieu de `llm_sdk/llm_sdk/`. Corrigé par `mypy_path = "llm_sdk"` dans
+  `pyproject.toml`. Ça a aussi réglé `Returning Any` sur `encode` : mypy voit enfin les vrais types du SDK.
+
+### Vérification
+
+```
+Engine() ; next_logits(encode("The capital of France is"))
+→ 151936 (151936,) float32 ' Paris'
+```
+
+## 21. Tests du vocabulaire (`tests/test_vocabulary.py`)
+
+Aucun test ne charge le modèle (0,15 s) : on teste `_bytes_to_unicode`, `_decode_token` et `Vocabulary` directement.
+
+| Test | Vérifie |
+|---|---|
+| `test_table_covers_all_bytes_once` | 256 octets → 256 caractères distincts |
+| `test_table_known_values` | `a` → `a`, espace → `Ġ`, `\n` → `Ċ` |
+| `test_decode_token` (5 cas) | `Ġthe` → `" the"`, `Ċ` → `"\n"`, `7`, `Ã©` → `é`, `"` |
+| `test_decode_fragment_is_none` | `Ã` (demi-`é`) → `None`, jamais `�` |
+| `test_vocabulary_fills_and_leaves_gaps` | faux `vocab.json` de 3 tokens, `size=5` → `[" the", "\n", None, None, None]` |
+
+- **`@pytest.fixture`** : `char_to_byte` est construite une fois et injectée dans les tests qui la demandent en paramètre.
+- **`@pytest.mark.parametrize`** : un seul test exécuté pour chaque couple `(token, text)`, et chaque cas s'affiche séparément.
+- **Faux `vocab.json` dans `tmp_path`** : on teste la logique de la classe sans le vrai fichier de 151 643 tokens.
+  Les ids 3 et 4, absents du fichier, simulent les tokens spéciaux et les trous.
+- Total du projet : **28 tests** verts.
+
+## 22. Récapitulatif phase 3 « Terminé quand… » ✅
+
+- [x] Décodage byte-level de chaque token ; fragments, tokens spéciaux et trous = `None`
+- [x] Aller-retour `"".join(id_to_text[i] for i in encode(s)) == s` vrai pour 10 phrases (§19)
+- [x] Façade `Engine` : `encode`, `next_logits`, `vocab` ; taille des logits mesurée (§20)
+- [x] Tests `tests/test_vocabulary.py` (§21) ; `make lint` propre
+- Limite assumée : les caractères qui n'existent qu'en fragments (emojis, CJK rares) ne peuvent pas être générés.

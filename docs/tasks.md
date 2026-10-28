@@ -407,16 +407,16 @@ chaque cas d'erreur affiche un message clair sans traceback.
 🎯 Pour tout id, connaître le **texte réel** qu'il ajoute à la sortie.
 
 🔧 Étapes
-- [ ] `llm/vocabulary.py` : classe `Vocabulary` qui charge `vocab.json` (+ les `added_tokens`
+- [x] `llm/vocabulary.py` : classe `Vocabulary` qui charge `vocab.json` (+ les `added_tokens`
       de `tokenizer.json` pour connaître les ids spéciaux) et construit
       `id_to_text: list[str | None]` (taille = taille des logits ; `None` = id inutilisable).
-- [ ] Implémenter le décodage byte-level (concepts §3) **ou** le cache via `decode([id])`.
-      Comparer les deux sur 1000 ids au hasard : mêmes résultats ?
-- [ ] Marquer les tokens spéciaux et les fragments UTF-8 invalides comme inutilisables.
-- [ ] `llm/engine.py` : classe `Engine` (façade sur le SDK) avec
+- [x] Implémenter le décodage byte-level (concepts §3) **ou** le cache via `decode([id])`.
+      Comparer les deux sur 1000 ids au hasard : mêmes résultats ? → remplacé par l'aller-retour encode/join (scratch/10_vocab_key.py)
+- [x] Marquer les tokens spéciaux et les fragments UTF-8 invalides comme inutilisables.
+- [x] `llm/engine.py` : classe `Engine` (façade sur le SDK) avec
       `encode(text) -> list[int]` et `next_logits(ids) -> np.ndarray`. Tout le reste du code
       ne parle qu'à `Engine`, jamais directement au SDK.
-- [ ] Tests : `"Ġthe"` → `" the"`, `"Ċ"` → `"\n"`, un chiffre, un token spécial.
+- [x] Tests : `"Ġthe"` → `" the"`, `"Ċ"` → `"\n"`, un chiffre, un token spécial.
 
 🧠 concepts §3.
 
