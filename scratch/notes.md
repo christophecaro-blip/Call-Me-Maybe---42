@@ -738,3 +738,296 @@ Aucun test ne charge le modèle (0,15 s) : on teste `_bytes_to_unicode`, `_decod
 - [x] Façade `Engine` : `encode`, `next_logits`, `vocab` ; taille des logits mesurée (§20)
 - [x] Tests `tests/test_vocabulary.py` (§21) ; `make lint` propre
 - Limite assumée : les caractères qui n'existent qu'en fragments (emojis, CJK rares) ne peuvent pas être générés.
+
+---
+
+# Phase 4 — Décodage contraint + choix de la fonction
+
+## 23. Les contraintes (`src/decoding/constraints.py`)
+
+### Le rôle
+
+Une contrainte est un **petit automate** qui suit la valeur en cours d'écriture et dit quel texte peut venir ensuite.
+**Le modèle choisit** parmi les tokens permis, **la contrainte ne fait qu'interdire**. C'est la réponse à
+« le choix est-il fait par le LLM ? ».
+
+| Méthode | Question | Modifie l'état ? |
+|---|---|---|
+| `accepts(text)` | ce texte peut-il prolonger la valeur ? | ❌ simple question |
+| `advance(text)` | ce texte a été choisi, on l'enregistre | ✅ seule méthode qui modifie |
+| `is_complete()` | la valeur est-elle terminée ? | ❌ |
+
+**Pourquoi `accepts` ne modifie rien** : le décodeur l'appelle sur beaucoup de candidats avant d'en garder un.
+Un candidat refusé ne doit pas « polluer » l'état.
+
+### Classe de base `Constraint(BaseModel)`
+
+- Elle fixe le **contrat** (les 3 méthodes) sans savoir y répondre, d'où `raise NotImplementedError`.
+- Chaque type (choix, nombre, string…) est une **sous-classe**. Le décodeur manipule n'importe laquelle sans savoir
+  laquelle c'est.
+- `BaseModel`, car le sujet impose pydantic pour les classes (architecture D6).
+
+### `ChoiceConstraint(options, generated="")`
+
+Le `"` d'ouverture est forcé avant. La contrainte couvre **le nom puis le `"` fermant**.
+
+```python
+def accepts(self, text: str) -> bool:
+    candidate = self.generated + text
+    is_prefix = any(option.startswith(candidate) for option in self.options)   # cas A
+    is_closed = any(option + '"' == candidate for option in self.options)      # cas B
+    return is_prefix or is_closed
+
+def advance(self, text: str) -> None:
+    self.generated += text
+
+def is_complete(self) -> bool:
+    return any(option + '"' == self.generated for option in self.options)
+```
+
+| `candidate` (options `fn_add_numbers`, `fn_greet`) | Résultat | Cas |
+|---|---|---|
+| `fn`, `fn_gr`, `fn_greet` | ✅ | A : début d'une option (une option est son propre début) |
+| `fn_greet"` | ✅ | B : option + `"` exactement |
+| `fn_greet",` | ❌ | débordement après `"` refusé |
+| `fn_gr"` | ❌ | fermer au milieu d'un nom donnerait une fonction inconnue |
+| `Hello`, ` fn` | ❌ | aucune option ne commence ainsi (même un espace devant) |
+
+### `fn_add` / `fn_add_numbers` : qui tranche ?
+
+Après `fn_add`, `_numbers` (cas A) **et** `"` (cas B) sont tous les deux permis. **Aucun code spécial** n'est
+nécessaire : la contrainte ne tranche pas, ce sont **les logits du modèle** qui décident.
+
+### Pièges rencontrés
+
+- `generated` sans `self.` → `NameError` (même erreur que `encode` dans `engine.py`).
+- `startwith` / `endwith` → `startswith` / `endswith`, avec un **s**.
+- **`option.endswith('"') == candidate`** : `endswith` **répond** vrai/faux, il ne **fabrique** pas de texte.
+  On comparait un booléen à une chaîne, donc toujours `False` : le `"` fermant n'aurait jamais été accepté et la
+  génération ne se serait jamais terminée. Correct : `option + '"' == candidate` (fabriquer, puis comparer).
+- `a if a else b` → **`a or b`** : `True` dès qu'au moins un est vrai. Sa sœur `and` : `True` si les deux le sont.
+- `any(... for x in ...)` : une compréhension dans `any`, qui renvoie `True` dès qu'un élément vérifie la condition.
+- Un guillemet double en Python : `'"'`.
+
+### Vérification et tests
+
+`scratch/11_choice.py` :
+```
+True False      ← "fn" accepté, "Hello" refusé
+True True       ← après fn_add : _numbers ET " permis
+False False     ← '",' refusé ; pas encore fini
+True fn_add"    ← terminé
+```
+
+`tests/test_constraints.py` (17 tests, sans modèle) : classe de base abstraite, préfixes acceptés et refusés
+(`parametrize`), `accepts` sans effet sur l'état, préfixe partagé, fermeture, débordement refusé, `"` au milieu
+d'un nom refusé, nom complet + `"` en un seul token. Total du projet : **45 tests**.
+
+## 24. Le décodeur (`src/decoding/decoder.py`)
+
+C'est là que le modèle et la contrainte se rencontrent : **le modèle note, la contrainte filtre**.
+
+```python
+def _best_allowed(logits, engine, constraint) -> tuple[int, str]:
+    for token_id in np.argsort(logits)[::-1]:           # ids du meilleur au moins bon
+        text = engine.vocab.id_to_text[token_id]
+        if text is not None and constraint.accepts(text):
+            return int(token_id), text
+    raise DecodingError("no token is allowed by the constraint")
+
+def decode_value(engine, ids, constraint, max_tokens) -> tuple[list[int], str]:
+    ids = list(ids)                                     # copie : ne pas modifier la liste de l'appelant
+    generated = ""
+    for _ in range(max_tokens):                         # limite dure → la boucle termine toujours (D3)
+        logits = engine.next_logits(ids)                # 1. noter
+        token_id, text = _best_allowed(logits, engine, constraint)   # 2. filtrer
+        constraint.advance(text)                        # 3. enregistrer
+        generated += text
+        ids.append(token_id)
+        if constraint.is_complete():                    # 4. fini ?
+            break
+    return ids, generated
+```
+
+### Les ids dans les logits
+
+Les ids ne sont pas **dans** `logits` : ce sont ses **positions**. `logits[i]` est la note du token `i`,
+`vocab.id_to_text[i]` est son texte (« case `i` = token `i` »).
+
+```
+token_id ─┬─► logits[token_id]           → 18.7      (sert à TRIER)
+          └─► vocab.id_to_text[token_id] → " Paris"  (sert à FILTRER)
+```
+
+### `np.argsort` et `[::-1]`
+
+```python
+logits = np.array([0.5, 9.0, -2.0, 3.0])
+np.argsort(logits)        # [2, 0, 3, 1]  ← les IDS, du pire au meilleur
+np.argsort(logits)[::-1]  # [1, 3, 0, 2]  ← du meilleur au pire
+```
+- `argsort` renvoie les **positions** classées par note, pas les notes triées.
+- Un tableau numpy n'a pas de `.reverse()` (réservé aux `list`). `[::-1]` = slicing à l'envers.
+
+### Recherche paresseuse (architecture D4)
+
+On ne teste pas les 151 936 tokens : on s'arrête au **premier** candidat accepté, en général dans les premiers.
+Le résultat est **identique** à « tout masquer à `-inf` puis `argmax` », pour une fraction du coût.
+
+### Court-circuit de `and` : la garde avant l'appel
+
+`text is not None and constraint.accepts(text)` : si la gauche est fausse, Python **n'évalue pas** la droite.
+`accepts(None)` n'est donc jamais appelé (sinon `"fn" + None` → `TypeError`). **La garde vient toujours avant.**
+Écrire `text is not None` plutôt que `if text`, qui serait aussi faux pour `""`.
+
+### L'impasse → `DecodingError`
+
+On arrive au `raise` seulement si **aucun** des 151 936 tokens n'est accepté. Le modèle ne refuse jamais rien
+(il note tout) : c'est **notre** filtre qui bloque tout, donc un **bug de contrainte** (ex. `options=[]`).
+Message clair plutôt qu'une sortie inventée.
+
+### Copie de `ids` (aliasing)
+
+Une liste passée à une fonction n'est **pas copiée**. Sans `list(ids)`, les `append` modifieraient en cachette
+la liste de l'appelant (les ids du prompt, réutilisés pour les paramètres). Copie simple suffisante : les `int`
+ne se modifient pas.
+
+### Retourner un tuple (option B)
+
+`id_to_text[...]` est `str | None` pour mypy, qui ne sait pas que `_best_allowed` a écarté les `None`.
+- Option A : `assert text is not None` dans la boucle.
+- **Option B (retenue)** : `_best_allowed` renvoie `(id, texte)`. Dans le `if text is not None`, mypy sait que
+  `text` est un `str`. On ne lit `id_to_text` qu'une fois. Récupération : `token_id, text = _best_allowed(...)`.
+
+### Pièges rencontrés
+
+- `logits[token_id]` (la **note**, un float) passé à `accepts` au lieu de `text` → `TypeError`.
+  Et `if logits[...]` ne teste pas `None`, seulement que la note n'est pas `0.0`.
+- `constraint.generated` dans le message : `Constraint` (la base) n'a pas cet attribut, mypy le refuse.
+- `f"..."` sans `{}` → F541 ; `ids.appended` → `append`.
+- `for _ in range(n)` : `_` = variable de boucle dont on ne se sert pas.
+
+### Premier essai réel
+
+Prompt brut `Request: Greet shrek. Function to call: {"name": "` + `ChoiceConstraint` des 3 noms :
+```
+fn_greet"
+```
+Bon nom, choisi **par le modèle**, existence **garantie** par la contrainte.
+
+## 25. Le prompt (`src/prompting.py`)
+
+Fabrique **le texte complet** donné au modèle. Aucune logique de décodage, seulement de la mise en forme.
+
+```python
+IM_START = "<|im_start|>"
+IM_END = "<|im_end|>"
+NO_THINKING = "<think>\n\n</think>\n\n"
+SYSTEM_ROLE = "You translate user requests into function calls."
+
+def _describe(fn) -> str:            # "- fn_greet(name: string): Generate a greeting..."
+    params = ", ".join(f"{name}: {spec.type}" for name, spec in fn.parameters.items())
+    return f"- {fn.name}({params}): {fn.description}"
+
+def build_prompt(functions, user_prompt) -> str:
+    function_lines = "\n".join(_describe(fn) for fn in functions)
+    system = f"{SYSTEM_ROLE}\nAvailable functions:\n{function_lines}"
+    return (
+        f"{IM_START}system\n{system}{IM_END}\n"
+        f"{IM_START}user\n{user_prompt}{IM_END}\n"
+        f"{IM_START}assistant\n{NO_THINKING}"          # PAS d'IM_END : le modèle continue
+    )
+```
+
+### Les choix
+
+| Choix | Pourquoi |
+|---|---|
+| **Constantes** pour les balises | une balise mal écrite ne plante pas, elle est découpée en texte ordinaire et la qualité baisse **en silence**. Une faute dans le nom d'une constante → `NameError` / F821 immédiat |
+| `NO_THINKING` = bloc **vide** | le modèle « croit » avoir réfléchi et répond directement (= `enable_thinking=False`). Sinon de la prose à ~0,3 s/token |
+| `user_prompt` recopié **tel quel** | le modèle doit y trouver les valeurs exactes (`shrek`, `\d+`…) |
+| fonctions **décrites** dans le prompt | la contrainte garantit que le nom **existe** (la forme), le prompt aide à choisir **le bon** (le fond) |
+| pas de `returns` dans la description | le modèle ne produit pas la valeur de retour ; chaque token du prompt coûte du temps |
+
+Vérifié avec le tokenizer : **136 tokens** ; les 3 `<|im_start|>` et 2 `<|im_end|>` deviennent chacun **un seul id**
+(151644, 151645) ; le prompt se termine par `</think>\n\n`.
+
+### Pièges rencontrés
+
+- `", ".join(fn.parameters.items())` : `join` ne colle que des **textes**, `.items()` donne des **paires** → `TypeError`.
+  Il faut transformer chaque paire : `f"{name}: {spec.type}" for name, spec in ...` (déballage en 2 variables).
+- `{spec}` au lieu de `{spec.type}` : affiche l'objet entier → `a: type='number'`.
+- `_describe(fn for fn in functions)` : la boucle **dans** l'appel passe un générateur à `_describe`.
+  Et `"\n".join(f"{...}")` sur **un seul** texte parcourt ses **caractères**. La boucle va **à droite** de l'expression.
+- **`{x for x in ...}` crée un `set`** : pas d'ordre garanti, doublons supprimés → prompt non reproductible.
+
+  | Écriture | Type | Ordre |
+  |---|---|---|
+  | `[x for x in ...]` | `list` | ✅ |
+  | `{x for x in ...}` | `set` | ❌ |
+  | `f(x for x in ...)` | générateur | ✅ |
+
+- Refaire un `join` sur `function_lines`, alors qu'il est déjà le texte final : il suffit de l'insérer, `{function_lines}`.
+- `\n` en trop après `NO_THINKING` (qui finit déjà par `\n\n`) : 3 sauts de ligne au lieu de 2. Pas d'erreur, mais une
+  forme que le modèle n'a jamais vue.
+- f-strings l'une sous l'autre entre parenthèses, **sans virgule** = collées en un seul texte. Avec virgules = un tuple.
+- Une erreur de syntaxe **n'importe où** dans un module (les `...` du squelette) empêche tout le module de s'importer.
+
+## 26. Le branchement et la mesure (`scratch/12_choose_name.py`)
+
+```python
+names = [fn.name for fn in functions]            # objets pydantic → fn.name, pas fn["name"]
+for item in prompts:
+    prompt_text = build_prompt(functions, item.prompt)   # 1. le texte
+    prompt_ids = engine.encode(prompt_text)              # 2. texte → ids
+    ids = prompt_ids + engine.encode('{"name": "')       # 3. + segment forcé
+    _, text = decode_value(engine, ids, ChoiceConstraint(options=names), 20)
+```
+
+### Deux « mémoires » différentes
+
+| | Contient | Mis à jour par |
+|---|---|---|
+| `ids` | tout ce que voit le modèle : prompt + forcé + généré | concaténation `+`, `append` |
+| `constraint.generated` | **seulement** la valeur en cours | `advance` |
+
+**Forcer du texte = ajouter ses ids**, sans appel au modèle (gratuit). Ce n'est **pas** `advance` : la contrainte croirait
+que le nom commence par `{"name": "` → impasse.
+Subtilité : encoder un morceau à part peut donner un découpage différent du texte entier ; le texte reste identique.
+
+### Résultats : 11/11 corrects
+
+| Prompts | Fonction choisie |
+|---|---|
+| sum of 2 and 3 / 265 and 345 | `fn_add_numbers` |
+| Greet shrek / john | `fn_greet` |
+| Reverse 'hello' / 'world' | `fn_reverse_string` |
+| square root of 16 / 144 | `fn_get_square_root` |
+| Replace numbers / vowels, Substitute 'cat' | `fn_substitute_string_with_regex` |
+
+- Une faute de frappe `'{name": "'` (guillemet manquant) donnait **aussi** 11/11 : erreur **silencieuse**. En phase 6 ce
+  texte fera partie du JSON final → il doit être une constante.
+
+### Top 5 au 1er pas : seulement 2 candidats
+
+```
+fn_greet ← Greet shrek
+    'fn'   33.66
+    'f'    18.20
+```
+- Toujours `'fn'` et `'f'` seuls : **tous les noms commencent par `fn_`**, et seuls ces 2 tokens sont des débuts valides.
+- L'écart (34 contre 18) dit juste que le modèle est sûr du `fn`. **Le vrai choix se fait plus tard**, au pas où les noms
+  se séparent (après `fn_`). Matière pour le README : le pas décisif n'est pas toujours le premier.
+- Nouvelle contrainte pour le top 5 : `decode_value` **modifie** la sienne (finit à `'fn_greet"'`, qui refuse tout).
+- `top_allowed` devait être définie **avant** la boucle : un script s'exécute de haut en bas (`NameError` sinon).
+  Dans une classe, au contraire, une méthode est cherchée au moment de l'appel.
+- `float(logits[i])` : un nombre Python au lieu d'un `np.float32`. `!r` affiche le `repr` (on voit les espaces),
+  `:.2f` = 2 décimales.
+
+## 27. Récapitulatif phase 4 « Terminé quand… » ✅
+
+- [x] `Constraint` + `ChoiceConstraint`, 17 tests sans modèle (§23)
+- [x] `decode_value` : greedy contraint, recherche paresseuse, limite de tokens (§24)
+- [x] `build_prompt` : chat template, thinking désactivé, fonctions décrites (§25)
+- [x] Branchement : prompt + `{"name": "` forcé + `ChoiceConstraint` (§26)
+- [x] Tous les prompts reçoivent un nom **existant** (garanti) ; **11/11 corrects** (mesuré)

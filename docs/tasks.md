@@ -430,19 +430,19 @@ chaque cas d'erreur affiche un message clair sans traceback.
 🎯 Premier vrai résultat : **le LLM choisit le nom de fonction**, avec garantie de validité.
 
 🔧 Étapes
-- [ ] `decoding/constraints.py` : interface `Constraint` (`accepts(text)`, `advance(text)`,
+- [x] `decoding/constraints.py` : interface `Constraint` (`accepts(text)`, `advance(text)`,
       `is_complete()`) — cf. architecture D2.
-- [ ] `ChoiceConstraint(options: list[str])` : accepte un texte si `généré + texte` est préfixe
+- [x] `ChoiceConstraint(options: list[str])` : accepte un texte si `généré + texte` est préfixe
       d'une option ; se termine quand une option est complète **et** que le `"` fermant arrive.
       Tests unitaires (sans modèle !) : préfixes, option complète, options qui partagent un préfixe
       (`fn_add` / `fn_add_numbers` : comment tu tranches ?).
-- [ ] `decoding/decoder.py` : `decode_value(ids, constraint, max_tokens) -> (ids, texte)` :
+- [x] `decoding/decoder.py` : `decode_value(ids, constraint, max_tokens) -> (ids, texte)` :
   1. logits = engine.next_logits(ids)
   2. parcourir les ids par logit décroissant ; garder le premier dont le texte est accepté
   3. `advance`, ajouter l'id, recommencer jusqu'à `is_complete()` ou `max_tokens`.
-- [ ] `prompting.py` : `build_prompt(functions, user_prompt) -> str` (chat template, thinking désactivé).
-- [ ] Brancher : forcer `{"name": "` puis `decode_value(ChoiceConstraint(noms))`.
-- [ ] Afficher pour chaque prompt du jeu de test : nom choisi + les 5 meilleurs candidats valides
+- [x] `prompting.py` : `build_prompt(functions, user_prompt) -> str` (chat template, thinking désactivé).
+- [x] Brancher : forcer `{"name": "` puis `decode_value(ChoiceConstraint(noms))`.
+- [x] Afficher pour chaque prompt du jeu de test : nom choisi + les 5 meilleurs candidats valides
       avec leurs logits au 1er pas (super utile pour comprendre et pour le README).
 
 🧠 concepts §5, §6.
