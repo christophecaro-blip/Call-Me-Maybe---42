@@ -40,6 +40,15 @@ class Constraint(BaseModel):
         """Tell whether the value is finished and generation can stop."""
         raise NotImplementedError
 
+    def closing(self) -> str:
+        """Return the shortest text that ends the value validly.
+
+        Used when the token limit is reached before the value is
+        complete, so the JSON stays valid. Does not change the state:
+        the caller forces this text.
+        """
+        raise NotImplementedError
+
 
 class ChoiceConstraint(Constraint):
     """Pick one of a fixed list of strings, then an end marker.
@@ -82,6 +91,11 @@ class ChoiceConstraint(Constraint):
         """Done once a full option is followed by the end marker."""
         return any(
             option + self.end == self.generated for option in self.options)
+
+    def closing(self) -> str:
+        """Finish the first option that starts with what was generated."""
+        option = next(o for o in self.options if o.startswith(self.generated))
+        return option[len(self.generated):] + self.end
 
 
 class NumberState(Enum):
@@ -220,6 +234,16 @@ class NumberConstraint(Constraint):
         """Done once the end marker has been read."""
         return self.done
 
+    def closing(self) -> str:
+        """Add the marker, after a "0" if the number is unfinished.
+
+        "0" completes every non-accepting state: "" -> "0", "-" -> "-0",
+        "3." -> "3.0".
+        """
+        if self.state in ACCEPTING:
+            return self.end
+        return "0" + self.end
+
 
 # Letters allowed after a backslash in JSON (\uXXXX is not supported).
 JSON_ESCAPES = '"\\/bfnrt'
@@ -299,6 +323,16 @@ class StringConstraint(Constraint):
     def is_complete(self) -> bool:
         """Done once the closing quote has been read."""
         return self.done
+
+    def closing(self) -> str:
+        """Close the quote, finishing a pending escape first.
+
+        After a backslash, a lone quote would be an escaped quote (\\")
+        and leave the string open: a second backslash ends the escape.
+        """
+        if self.escaping:
+            return '\\"'
+        return '"'
 
 
 def make_constraint(spec: ParameterSpec, end: str) -> Constraint:

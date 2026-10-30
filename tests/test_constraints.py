@@ -8,6 +8,7 @@ from src.decoding.constraints import (
     ChoiceConstraint,
     Constraint,
     NumberConstraint,
+    NumberState,
     StringConstraint,
     make_constraint,
 )
@@ -370,3 +371,63 @@ def test_factory_passes_end(end: str) -> None:
     """The end marker given by the caller is the one used."""
     constraint = make_constraint(ParameterSpec(type="number"), end)
     assert constraint.accepts("7" + end)
+
+
+# --- closing() ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(("generated", "expected"), [
+    ("", 'fn_add"'), ("fn_gr", 'eet"'), ("fn_add", '"'),
+])
+def test_choice_closing(generated: str, expected: str) -> None:
+    """The first matching option is finished, then the marker added."""
+    choice = ChoiceConstraint(options=NAMES)
+    if generated:
+        _feed(choice, generated)
+    assert choice.closing() == expected
+    _feed(choice, expected)
+    assert choice.is_complete()
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("", "0,"), ("-", "0,"), ("3.", "0,"), ("26", ","), ("0.5", ","),
+])
+def test_number_closing(text: str, expected: str) -> None:
+    """A '0' completes unfinished numbers; then the marker."""
+    number = NumberConstraint(end=",")
+    if text:
+        _feed(number, text)
+    assert number.closing() == expected
+    _feed(number, expected)
+    assert number.is_complete()
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("", '"'), ("abc", '"'), ("a\\", '\\"'),
+])
+def test_string_closing(text: str, expected: str) -> None:
+    """A pending escape is finished before the quote."""
+    string = StringConstraint()
+    if text:
+        _feed(string, text)
+    assert string.closing() == expected
+    _feed(string, expected)
+    assert string.is_complete()
+
+
+def test_closing_does_not_change_state() -> None:
+    """closing() only returns text: the caller forces it."""
+    number = NumberConstraint(end="}")
+    _feed(number, "3.")
+    number.closing()
+    assert not number.is_complete()
+    assert number.state is NumberState.DOT
+
+
+@pytest.mark.parametrize("text", ["", "a", "a\\", "\\\\d+", 'say \\"'])
+def test_string_closing_gives_valid_json(text: str) -> None:
+    """Whatever was cut, the closed string parses with json.loads."""
+    string = StringConstraint()
+    if text:
+        _feed(string, text)
+    json.loads('"' + text + string.closing())

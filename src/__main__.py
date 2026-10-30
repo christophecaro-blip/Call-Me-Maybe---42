@@ -3,28 +3,30 @@
 import sys
 
 from src.cli import parse_args
-from src.errors import CallMeMaybeError
+from src.errors import CallMeMaybeError, DecodingError
 from src.io_utils import load_functions, load_prompts, write_results
+from src.llm.engine import Engine
 from src.models import FunctionCall, FunctionDefinition, PromptItem
+from src.pipeline import FunctionCaller
 
 
-def _fake_calls(
+def _run_pipeline(
     functions: list[FunctionDefinition], prompts: list[PromptItem]
 ) -> list[FunctionCall]:
-    """Placeholder pipeline: answer every prompt with the first function.
+    """Generate one call per prompt with the model.
 
-    Every parameter gets a dummy value. Replaced by the real pipeline
-    in phase 6.
+    The model is loaded once. A prompt that fails is reported on stderr
+    and left out of the output, rather than replaced by a made-up call;
+    the other prompts are still processed.
     """
-    fn = functions[0]
-    return [
-        FunctionCall(
-            prompt=p.prompt,
-            name=fn.name,
-            parameters={name: 0.0 for name in fn.parameters},
-        )
-        for p in prompts
-    ]
+    caller = FunctionCaller(engine=Engine(), functions=functions)
+    calls = []
+    for item in prompts:
+        try:
+            calls.append(caller.call(item.prompt))
+        except DecodingError as e:
+            print(f"Warning: skipped {item.prompt!r}: {e}", file=sys.stderr)
+    return calls
 
 
 def main() -> int:
@@ -37,7 +39,7 @@ def main() -> int:
         config = parse_args()
         functions = load_functions(config.functions_definition)
         prompts = load_prompts(config.input)
-        calls = _fake_calls(functions, prompts)
+        calls = _run_pipeline(functions, prompts)
         write_results(config.output, calls)
         return 0
     except CallMeMaybeError as e:

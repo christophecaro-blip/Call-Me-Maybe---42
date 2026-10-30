@@ -1,4 +1,4 @@
-"""End-to-end tests of the entry point (with the placeholder pipeline)."""
+"""End-to-end tests of the entry point (the model is replaced by a fake)."""
 
 import json
 import sys
@@ -6,13 +6,27 @@ from pathlib import Path
 
 import pytest
 
-from src.__main__ import main
+import src.__main__ as entry
+from src.models import FunctionCall, FunctionDefinition, PromptItem
+
+
+def _fake_pipeline(
+    functions: list[FunctionDefinition], prompts: list[PromptItem]
+) -> list[FunctionCall]:
+    """Answer every prompt with the first function, without the model."""
+    fn = functions[0]
+    return [
+        FunctionCall(prompt=p.prompt, name=fn.name,
+                     parameters={name: 0.0 for name in fn.parameters})
+        for p in prompts
+    ]
 
 
 def _run(monkeypatch: pytest.MonkeyPatch, *args: str) -> int:
-    """Call main() as if the program was launched with `args`."""
+    """Call main() as if launched with `args`, with the fake pipeline."""
     monkeypatch.setattr(sys, "argv", ["src", *args])
-    return main()
+    monkeypatch.setattr(entry, "_run_pipeline", _fake_pipeline)
+    return entry.main()
 
 
 def test_success_writes_output(
