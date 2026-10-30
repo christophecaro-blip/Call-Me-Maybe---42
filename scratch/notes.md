@@ -1228,3 +1228,144 @@ typée `Constraint`, vérifie `accepts` **avant** chaque `advance`, pour toutes 
 - [x] `StringConstraint` v1 puis v2 : échappements, `\\d+` obligatoire pour la regex (§30)
 - [x] Débordement après le marqueur : **refusé** partout (à écrire dans le README, « Design decisions »)
 - [x] Fabrique `make_constraint(spec, end)` (§31)
+
+---
+
+# Phase 6 — Pipeline complet
+
+## 33. Construire le JSON morceau par morceau (`src/pipeline.py`)
+
+Pour `What is the sum of 2 and 3?` → `fn_add_numbers(a: number, b: number)` :
+
+| # | Texte | Qui l'écrit |
+|---|---|---|
+| 1 | `{"name": "` | forcé |
+| 2 | `fn_add_numbers"` | **modèle** (`ChoiceConstraint`) |
+| 3 | `, "parameters": {"a": ` | forcé |
+| 4 | `2,` | **modèle** (`NumberConstraint(end=",")`), la `,` comprise |
+| 5 | ` "b": ` | forcé |
+| 6 | `3}` | **modèle** (`NumberConstraint(end="}")`, dernier paramètre) |
+| 7 | `}` | forcé |
+
+**Chaînes** : la clé forcée inclut le `"` d'ouverture (`"name": "`), la valeur s'arrête sur son `"`, et c'est **le
+pipeline** qui force ensuite le `,` ou le `}` (la chaîne ne le consomme pas, contrairement aux nombres et booléens).
+
+### Deux variables qui avancent ensemble
+
+| Variable | Contient | Sert à |
+|---|---|---|
+| `ids` | prompt + tout ce qui est forcé ou généré | ce que lit **le modèle** |
+| `text` | **seulement le JSON** (pas le prompt) | ce que lit **`json.loads`** à la fin |
+
+```python
+def _force(self, ids, text, segment):
+    return ids + self.engine.encode(segment), text + segment     # nouvelles listes, sans le modèle
+```
+
+### Les méthodes
+
+| Méthode | Rôle |
+|---|---|
+| `_force(ids, text, segment)` | ajoute du texte fixe aux deux, **sans appel au modèle** (gratuit) |
+| `_choose_function(ids, text)` | nom via `ChoiceConstraint` → renvoie aussi la `FunctionDefinition` (`next(...)`) |
+| `_generate_parameters(ids, text, fn)` | clés forcées dans l'ordre, valeurs via `make_constraint(spec, end)` |
+| `call(prompt)` | **la seule méthode publique** : enchaîne tout, `json.loads`, `_convert`, `FunctionCall` |
+
+- Les méthodes `_privées` sont les étapes internes : `__main__.py` ne connaît que `call` (comme la façade `Engine`).
+- `FunctionCaller(BaseModel)` avec `model_config = ConfigDict(arbitrary_types_allowed=True)` : `Engine` n'est pas un
+  type pydantic, et pydantic refuse par défaut les types qu'il ne connaît pas.
+- `end = "}" if i == last else ","` avec `last = len(fn.parameters) - 1` (index commencent à 0, comme en C).
+- `enumerate(...)` donne `(index, élément)` : `for i, (name, spec) in enumerate(fn.parameters.items())`.
+- Fonction **sans paramètre** : `if not fn.parameters:` (un dict vide est « faux ») → `{}`. **Pas encore testé.**
+
+### Pièges rencontrés
+
+- **`ids.extend(...)` renvoie `None`** (comme `append`, `sort`…) **et** modifie la liste de l'appelant. `+` crée une
+  nouvelle liste.
+- `engine` sans `self.` → F821.
+- `generated[:len(generated)-1]` → `generated[:-1]` (indice négatif = depuis la fin).
+- **Priorité de l'expression conditionnelle** : `f'"{name}":' + " " if i > 0 else ""` se lit
+  `(f'...' + " ") if i > 0 else ""` → la clé **disparaît** pour le 1er paramètre. Deux lignes : `prefix = ...`, puis
+  `key = f'{prefix}"{name}": '`.
+- `f'"{name}:"'` : le `:` doit être **après** le guillemet fermant de la clé.
+- `self._force(...)` sans `ids, text = ...` devant : le résultat est perdu (`_force` ne modifie rien).
+- `end` inversé (`","` pour le dernier).
+
+## 34. La fermeture forcée : `closing()`
+
+**Problème trouvé au 1er essai complet** : sur les regex, le modèle se répète, `MAX_VALUE_TOKENS` (30) coupe la valeur
+**avant** son `"`, et le pipeline enchaîne `, "replacement": ` → chaîne jamais fermée (parfois finie par un `\` seul)
+→ **JSON invalide**. Règle d'or (concepts §8) violée.
+
+**Solution** : une 4ᵉ méthode au contrat `Constraint`, **`closing() -> str`**, le texte le plus court qui termine la
+valeur **validement**. Elle **ne modifie pas** l'état : c'est le pipeline qui le force avec `_force`.
+
+| Contrainte | État à la coupure | `closing()` |
+|---|---|---|
+| `ChoiceConstraint` | `fn_gr` | fin de la 1ʳᵉ option qui commence ainsi + `end` → `eet"` |
+| `NumberConstraint` | acceptant (`26`) | `end` |
+| `NumberConstraint` | `START` / `SIGN` / `DOT` | `"0" + end` → `0,`, `-0,`, `3.0,` |
+| `StringConstraint` | normal | `"` |
+| `StringConstraint` | juste après un `\` | `\` + `"` : le 2ᵉ `\` **termine l'échappement**, puis `"` ferme |
+
+- Pourquoi pas `"` seul après un `\` : d'après la règle B, le caractère après `\` est une **lettre d'échappement**,
+  donc `\"` est un guillemet **dans** le texte et la chaîne reste ouverte.
+- Le `0` complète **tout** nombre non fini (dans les 3 états non acceptants, un chiffre mène à un état acceptant).
+- Appliqué **aussi au nom** : coupé à `fn_gr`, il ne correspondrait à aucune fonction → `StopIteration` dans `next`.
+- Test : 5 chaînes coupées (dont `a\` et `say \"`) fermées puis passées à `json.loads`.
+
+## 35. Sortie et branchement
+
+```python
+def _convert(values, fn):                 # json.loads lit 2 comme un int ; le sujet attend 2.0
+    return {name: float(values[name]) if spec.type == "number" else values[name]
+            for name, spec in fn.parameters.items()}
+```
+- Le **type** est dans la **valeur** de `fn.parameters` (`ParameterSpec.type`), pas dans la clé. On parcourt la
+  définition, pas le JSON : dans le JSON, rien ne distingue un `number` 2 d'un `integer` 2.
+- Compréhension de **dict** `{clé: valeur for ...}` : les accolades sont voulues (≠ le `set` de `prompting.py`).
+- `call` : `json.loads(text)` puis `FunctionCall(prompt=prompt, ...)`. Le `prompt` est **recopié**, pas généré.
+- **Les 3 niveaux de garantie (D5)** : construction (contraintes + `closing`), vérification (`json.loads` + pydantic),
+  sérialisation (`json.dump` dans `write_results`, jamais de concaténation).
+
+### `__main__.py` : `_run_pipeline` remplace `_fake_calls`
+
+```python
+caller = FunctionCaller(engine=Engine(), functions=functions)    # modèle chargé UNE fois
+calls = []
+for item in prompts:
+    try:
+        calls.append(caller.call(item.prompt))
+    except DecodingError as e:
+        print(f"Warning: skipped {item.prompt!r}: {e}", file=sys.stderr)
+```
+
+- **Politique d'échec : omettre l'entrée** + message sur stderr (à justifier dans le README). Un appel « par défaut »
+  serait une **fausse** réponse, inventée par le code, comptée fausse de toute façon, et cacherait le bug.
+- **`try` dans la boucle** : autour de la boucle, une erreur au 5ᵉ prompt arrêterait tout.
+- **`Engine()` avant la boucle** : sinon le modèle serait rechargé 11 fois.
+- `main` appelait encore `_fake_calls` après le renommage → F821.
+
+### Les tests restent rapides
+
+Après le branchement, `test_main.py` lançait le **vrai** modèle : suite de tests en **2 min 12**. Correction :
+`monkeypatch.setattr(entry, "_run_pipeline", _fake_pipeline)` → **5 s**. Les tests de `main` vérifient les arguments,
+le fichier écrit et les codes de sortie, pas le modèle.
+
+## 36. Résultat de `make run`
+
+- `data/output/function_calling_results.json` : **11 entrées**, clés exactes `prompt`, `name`, `parameters`, JSON valide.
+- **Temps total : 2 min 14** (chargement compris), sous la limite de 5 min.
+- **11/11 noms corrects, 8/11 appels entièrement corrects** : additions (`2.0`, `265.0`…), salutations, inversions,
+  racines carrées.
+- **3 échecs, tous des regex** : `([0-9]+)\\s*(\\d+)?\\s*(\\d+)?…`, `([aeiouAEIOU])|([aeiouAEIOU])|…`,
+  `cat\\s+dog\\s+cat…`. Le JSON est valide (fermeture forcée), les échappements marchent (`\\s`, `\\d`), mais le modèle
+  **se répète** au lieu de s'arrêter. → **Phase 7** (qualité) : prompt avec un exemple, limite plus courte…
+
+### Récapitulatif phase 6
+
+- [x] `FunctionCaller.call(prompt) -> FunctionCall`, segments forcés sans appel au modèle (§33)
+- [x] `closing()` : JSON valide même quand une valeur est coupée (§34)
+- [x] `_convert`, branchement dans `__main__.py`, politique d'échec (§35)
+- [x] `make run` → fichier valide, 11 entrées (§36)
+- [ ] Fonction sans paramètre : à tester

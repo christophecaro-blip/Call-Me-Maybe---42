@@ -482,18 +482,18 @@ et que tu mesures combien sont **corrects**.
 🎯 Le vrai fichier de sortie, valide à 100 %.
 
 🔧 Étapes
-- [ ] `pipeline.py` : `FunctionCaller` (pydantic, contient `Engine`, `Vocabulary`, définitions).
+- [x] `pipeline.py` : `FunctionCaller` (pydantic, contient `Engine`, `Vocabulary`, définitions).
       `call(prompt) -> FunctionCall` :
   1. prompt → ids
   2. forcer `{"name": "` → choix → forcer `", "parameters": {`
   3. pour chaque paramètre : forcer `"<nom>": ` (+ `"` si string) → `decode_value` → forcer `, ` ou rien
   4. forcer `}}`
   5. `json.loads(texte_généré)` → conversion des types (`number` → `float`) → `FunctionCall`
-- [ ] Optimisation immédiate : les segments forcés sont ajoutés **sans** appel au modèle.
+- [x] Optimisation immédiate : les segments forcés sont ajoutés **sans** appel au modèle.
 - [ ] Fonction sans paramètre : `"parameters": {}` — tester.
-- [ ] `try/except` par prompt : un échec → log stderr + on continue (décider : on omet l'entrée ?
+- [x] `try/except` par prompt : un échec → log stderr + on continue (décider : on omet l'entrée ?
       on écrit quand même un appel ? → justifier).
-- [ ] Remplacer le faux pipeline de la phase 2.
+- [x] Remplacer le faux pipeline de la phase 2.
 
 🧠 concepts §6, architecture D1/D5.
 
