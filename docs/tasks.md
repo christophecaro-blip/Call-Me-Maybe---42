@@ -457,19 +457,19 @@ et que tu mesures combien sont **corrects**.
 🎯 Une contrainte par type, chacune testée **sans le modèle**.
 
 🔧 Étapes (une à la fois, tests d'abord)
-- [ ] `BooleanConstraint` → réutiliser `ChoiceConstraint(["true", "false"])` + marqueur de fin.
-- [ ] `NumberConstraint(end_chars)` : automate de concepts §7, longueur max, fin autorisée
+- [x] `BooleanConstraint` → réutiliser `ChoiceConstraint(["true", "false"])` + marqueur de fin.
+- [x] `NumberConstraint(end_chars)` : automate de concepts §7, longueur max, fin autorisée
       seulement en état acceptant. Tests : `0`, `-3`, `3.14`, `007` (refusé), `1.` (incomplet),
       `-` (incomplet), token `"5,"`.
-- [ ] `IntegerConstraint` : idem sans `.` (si le type existe dans les définitions).
-- [ ] `StringConstraint` v1 : tout caractère sauf `"`, `\` et contrôles ; fin sur `"`.
+- [x] `IntegerConstraint` : idem sans `.` (si le type existe dans les définitions).
+- [x] `StringConstraint` v1 : tout caractère sauf `"`, `\` et contrôles ; fin sur `"`.
       Tests : vide, espaces, apostrophes, unicode.
-- [ ] `StringConstraint` v2 : échappements (`\\`, `\"`, `\n`, `\uXXXX`). Test : `\d+` doit
+- [x] `StringConstraint` v2 : échappements (`\\`, `\"`, `\n`, `\uXXXX`). Test : `\d+` doit
       sortir en JSON `"\\d+"` et redonner `\d+` après `json.loads`.
       **Obligatoire** : le prompt « Replace all numbers in … » du jeu fourni en a besoin.
-- [ ] Décider la politique des tokens qui débordent après le marqueur de fin (concepts §8)
+- [x] Décider la politique des tokens qui débordent après le marqueur de fin (concepts §8)
       et l'écrire dans le README (« Design decisions »).
-- [ ] Fabrique : `make_constraint(spec: ParameterSpec) -> Constraint` ; type inconnu → erreur claire.
+- [x] Fabrique : `make_constraint(spec: ParameterSpec) -> Constraint` ; type inconnu → erreur claire.
 
 🧠 concepts §7, §8.
 

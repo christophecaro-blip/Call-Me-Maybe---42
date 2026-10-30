@@ -1031,3 +1031,200 @@ fn_greet ← Greet shrek
 - [x] `build_prompt` : chat template, thinking désactivé, fonctions décrites (§25)
 - [x] Branchement : prompt + `{"name": "` forcé + `ChoiceConstraint` (§26)
 - [x] Tous les prompts reçoivent un nom **existant** (garanti) ; **11/11 corrects** (mesuré)
+
+---
+
+# Phase 5 — Contraintes de valeurs
+
+## 28. Booléens : `ChoiceConstraint` avec un marqueur configurable
+
+Un booléen JSON n'a pas de guillemets : `"flag": true, ...` ou `"flag": true}`. Rien **dans** `true` ne dit « stop »,
+c'est le **caractère structurel suivant** qui termine la valeur.
+
+```python
+class ChoiceConstraint(Constraint):
+    options: list[str]
+    generated: str = ""
+    end: str = '"'                      # défaut = comportement de la phase 4
+
+    # accepts / is_complete : option + self.end  (au lieu de option + '"')
+```
+
+- **Valeur par défaut** : `ChoiceConstraint(options=names)` marche exactement comme avant. Les 17 tests de la phase 4
+  n'ont pas bougé. On ajoute une possibilité **sans casser l'existant**.
+- **`,` ou `}` : c'est l'appelant qui décide.** La contrainte ne voit que sa valeur, elle ne sait pas si c'est le dernier
+  paramètre. Le pipeline le sait. Chaque morceau ne connaît que ce dont il a besoin.
+- **Pas de classe `BooleanConstraint`** : `ChoiceConstraint(options=["true", "false"], end=end)` suffit.
+- `true` puis `,` (2 tokens) et `true,` (1 token) sont acceptés : on compare des **textes**. `true, ` est refusé.
+- **Piège pydantic** : un champ **inconnu** est ignoré **en silence** (`ChoiceConstraint(..., end=",")` ne plantait pas
+  avant que `end` existe). Parade possible : `model_config = ConfigDict(extra="forbid")`.
+- **Tests d'abord** : un test qui échoue avant le code prouve qu'il teste vraiment quelque chose.
+
+## 29. Nombres : `NumberState`, `_step`, `NumberConstraint`
+
+Grammaire (sans exposant) : `-?(0|[1-9][0-9]*)(\.[0-9]+)?`
+
+### L'automate
+
+| État ↓ / caractère → | `-` | `0` | `1`-`9` | `.` | autre | acceptant ? |
+|---|---|---|---|---|---|---|
+| `START` | `SIGN` | `ZERO` | `INT` | ❌ | ❌ | ❌ |
+| `SIGN` | ❌ | `ZERO` | `INT` | ❌ | ❌ | ❌ |
+| `ZERO` | ❌ | ❌ | ❌ | `DOT` | ❌ | ✅ |
+| `INT` | ❌ | `INT` | `INT` | `DOT` | ❌ | ✅ |
+| `DOT` | ❌ | `FRAC` | `FRAC` | ❌ | ❌ | ❌ |
+| `FRAC` | ❌ | `FRAC` | `FRAC` | ❌ | ❌ | ✅ |
+
+- **`Enum`** plutôt que des `str` : une faute (`State.INTT`) → `AttributeError` immédiat et mypy le signale, et la
+  liste des états est fermée. Comparer avec **`is`** (un seul objet par membre). `auto()` = valeur sans importance.
+- `ACCEPTING = {ZERO, INT, FRAC}` : un `set`, voulu ici (on ne fait que `state in ACCEPTING`).
+- `_step(state, char)` = **traduction du tableau** en `if` / `return`, fonction du **module** (pas de `self`).
+  Elle ne connaît que les caractères du nombre ; le marqueur est géré par la classe.
+- `char in "0123456789"` plutôt que `isdigit()` (qui accepte `"٣"`).
+
+### La classe : `_run` simule, `advance` enregistre
+
+```python
+class NumberConstraint(Constraint):
+    end: str                        # obligatoire : un nombre n'a pas de marqueur naturel
+    max_length: int = 20
+    allow_fraction: bool = True     # False pour "integer"
+    state: NumberState = NumberState.START
+    length: int = 0
+    done: bool = False
+
+    def _run(self, text):           # → (state, length, done) ou None
+        state, length, done = self.state, self.length, self.done   # COPIES locales
+        for char in text:
+            if done: return None                                   # A. rien après le marqueur
+            if char == self.end:                                   # B. marqueur
+                if state not in ACCEPTING: return None
+                done = True
+            elif length >= self.max_length and state in ACCEPTING: # C. limite
+                return None
+            elif char == "." and not self.allow_fraction:          # integer
+                return None
+            else:                                                  # D. automate
+                next_state = _step(state, char)
+                if next_state is None: return None
+                state, length = next_state, length + 1
+        return state, length, done
+
+    def accepts(self, text):  return self._run(text) is not None
+    def advance(self, text):  self.state, self.length, self.done = <_run, sinon DecodingError>
+    def is_complete(self):    return self.done
+```
+
+- **`_run`** évite d'écrire la boucle deux fois. **Dans la boucle, on ne lit que les copies locales** : `self.length`
+  au lieu de `length` laissait passer un token `1234` malgré `max_length=3`.
+- **`is_complete` = `done`**, pas `state in ACCEPTING` : `26` est acceptant mais le modèle peut encore écrire `265`.
+- **Limite de longueur** : dans `FRAC`, un chiffre est **toujours** accepté → `3.14159…` sans fin. `max_tokens` du
+  décodeur couperait **au milieu**, sans marqueur → JSON invalide. La limite **dans la contrainte** force la fin propre.
+- **L'impasse évitée** : avec `max_length=3`, après `12.` (état `DOT`), le chiffre était refusé (limite) **et** le
+  marqueur aussi (non acceptant) → plus rien de possible. Correction : la limite ne bloque **que** les états acceptants
+  (`and state in ACCEPTING`). En `-` ou `12.`, un chiffre de plus est permis, et il mène toujours à un état acceptant.
+- **`integer` = `allow_fraction=False`** (option B) : une seule classe et un seul automate à tester. Le nom clair est
+  dans la fabrique. Le test est dans `_run` (accès à `self`), pas dans `_step`.
+
+### Pièges rencontrés
+
+- `char == "123456789"` compare **tout le texte** → toujours faux pour un caractère : il faut `in`.
+- `INT` + `0` → `ZERO` : `100` refusé. `ZERO` = **zéro de tête** seulement.
+- `DOT` + chiffre → `INT` : un 2ᵉ `.` redevenait possible (`3.5.2` accepté). `DOT` + chiffre → `FRAC`.
+- `DOT` sans le `0` : `2.0` refusé (le format attendu par le sujet !).
+- `NumberState not in ACCEPTING` : teste la **classe**, toujours vrai → le marqueur toujours refusé.
+- `end: str = None` : type et défaut contradictoires. Champ **obligatoire** = pas de `= ...`.
+- `return self._run(text) is None` : un mot manquant (`not`) inverse tout → 23 tests rouges.
+- `!x` (C) → `not x` (Python) ; `&&` → `and`, `||` → `or`.
+- `_step` indentée **dans** la classe → devient une méthode sans `self`.
+- `class X:` sans corps → `IndentationError` qui empêche **tout le module** de se charger. `pass` en attendant.
+- Docstring contenant `\.` → `W605` : doubler le `\` dans une chaîne ordinaire.
+
+## 30. Chaînes : `StringConstraint` (v1 puis v2 avec échappements)
+
+Le `"` d'ouverture est forcé ; la contrainte couvre le **contenu** et le **`"` fermant**. Marqueur toujours `"`.
+
+### Règles
+
+| Caractère | Résultat |
+|---|---|
+| ordinaire (lettres, espaces, `'`, `,`, accents…) | ✅ +1 caractère |
+| `"` | ✅ **termine** (même au 1er token : `""` est valide) |
+| `\` | ouvre un **échappement** (v2) ; refusé à la limite |
+| après `\` : `" \ / b f n r t` | ✅ fin de l'échappement, compte pour **1** caractère |
+| après `\` : autre (`d`, `x`, `u`…) | ❌ |
+| contrôle brut (`ord(char) < 32`, ex. `\n`) | ❌ |
+| quoi que ce soit après le `"` fermant | ❌ |
+
+- **L'apostrophe** est un caractère ordinaire en JSON : seuls `"` et `\` sont spéciaux (≠ Python).
+- **La virgule aussi** : `"shrek, the ogre"` est valide. Ce n'est pas `end` qui termine une chaîne, c'est son `"`.
+- `max_length = 100` (plus longue chaîne du jeu de test : 39 caractères). À la limite, seul le `"` passe : une chaîne
+  peut **toujours** s'arrêter, donc pas d'impasse.
+- `\uXXXX` **refusé** (choix documenté, à mettre dans le README) : le modèle peut écrire `é` directement.
+
+### Ordre des cas dans `_run` (il compte)
+
+```python
+length, done, escaping = self.length, self.done, self.escaping
+for char in text:
+    if done:                         return None        # A
+    if escaping:                                         # B. EN PREMIER
+        if char not in JSON_ESCAPES: return None
+        escaping = False
+        length += 1
+    elif char == '"':                done = True         # C
+    elif char == "\\":                                   # D
+        if length >= self.max_length: return None
+        escaping = True
+    elif ord(char) < 32:             return None         # E
+    elif length >= self.max_length:  return None         # F
+    else:                            length += 1         # G
+```
+
+- **B avant C** : dans `\"`, le `"` est **du texte**. Testé en second, il fermerait la chaîne au milieu.
+- **B avant F** : un échappement commencé pile à la limite doit pouvoir finir (même idée que `DOT`).
+- **Deux niveaux de `if`** dans B : `if escaping and char in JSON_ESCAPES` laisserait passer `\d` (la condition fausse
+  envoie le `d` aux cas suivants, qui l'acceptent comme caractère ordinaire).
+- `escaping` : un `bool` suffit (2 situations). Avec `\uXXXX`, il faudrait un compteur ou un `Enum`.
+
+### La regex du jeu de test
+
+Le modèle « connaît » `\d` et veut l'écrire tel quel. La contrainte **refuse** le `d` après un seul `\`, donc il doit
+écrire `\\d+`, que `json.loads` transforme en `\d+`. **C'est le décodage contraint qui corrige le modèle**, pas le prompt.
+
+### Pièges rencontrés
+
+- `is in` n'existe pas : `in` seul.
+- Lignes du bloc `if escaping:` mal indentées → un `elif` rattaché à rien → `SyntaxError`.
+- `elif char == "\\"` sans `:`.
+- En Python, `"\\"` est **un seul** `\` ; `JSON_ESCAPES = '"\\/bfnrt'` contient 8 caractères.
+
+## 31. La fabrique `make_constraint(spec, end)`
+
+```python
+def make_constraint(spec: ParameterSpec, end: str) -> Constraint:
+    if spec.type == "number":  return NumberConstraint(end=end)
+    if spec.type == "integer": return NumberConstraint(end=end, allow_fraction=False)
+    if spec.type == "boolean": return ChoiceConstraint(options=["true", "false"], end=end)
+    if spec.type == "string":  return StringConstraint()
+    raise DecodingError(f"unsupported parameter type: {spec.type!r}")
+```
+
+- **`end` en 2ᵉ paramètre** : `spec` ne dit que le type, pas si c'est le dernier paramètre.
+- **Type de retour `Constraint`** (la base) : le décodeur ne fait pas la différence entre les 3 classes.
+- **Le `raise` est impossible en pratique** : le `Literal` de `ParamType` refuse `"array"` **au chargement**
+  (exit 1, avant de charger le modèle). Il reste nécessaire pour mypy (tous les chemins doivent renvoyer), et il dira
+  quoi corriger si un 5ᵉ type est ajouté au `Literal` sans l'être ici.
+- Erreurs corrigées : `integer` créé comme un `number` (puis avec `end=False` à la place du marqueur), `boolean` créé
+  comme une `StringConstraint` (n'importe quel texte + un `"` → JSON cassé). Attrapées par `isinstance` dans les tests.
+
+## 32. Tests et récapitulatif phase 5 ✅
+
+`tests/test_constraints.py` : **122 tests** au total dans le projet. Une seule fonction `_feed(constraint, *tokens)`,
+typée `Constraint`, vérifie `accepts` **avant** chaque `advance`, pour toutes les contraintes.
+
+- [x] Booléens : `ChoiceConstraint(["true", "false"], end)` (§28)
+- [x] `NumberConstraint` : automate, longueur max sans impasse, `integer` via `allow_fraction` (§29)
+- [x] `StringConstraint` v1 puis v2 : échappements, `\\d+` obligatoire pour la regex (§30)
+- [x] Débordement après le marqueur : **refusé** partout (à écrire dans le README, « Design decisions »)
+- [x] Fabrique `make_constraint(spec, end)` (§31)
