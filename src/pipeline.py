@@ -79,7 +79,11 @@ class FunctionCaller(BaseModel):
     ) -> tuple[list[int], str]:
         """Write `, "parameters": {...}` with one generated value per key.
 
-        Keys are forced in definition order. Numbers and booleans end on
+        Keys are forced in definition order. For numbers and booleans the
+        key is forced without its trailing space: the model writes it,
+        often glued to the value (" -3", " true"), as it saw in
+        training; forcing the space alone made it drop minus signs.
+        Numbers and booleans end on
         "," or "}" themselves; a string ends on its quote, so the marker
         is forced after it. A value cut by the token limit is closed
         with `closing()`, so the JSON stays valid.
@@ -91,9 +95,9 @@ class FunctionCaller(BaseModel):
         for i, (name, spec) in enumerate(fn.parameters.items()):
             end = "}" if i == last else ","
             prefix = " " if i > 0 else ""
-            key = f'{prefix}"{name}": '
+            key = f'{prefix}"{name}":'
             if spec.type == "string":
-                key += '"'
+                key += ' "'
             ids, text = self._force(ids, text, key)
             constraint = make_constraint(spec, end)
             ids, value = decode_value(self.engine, ids, constraint,

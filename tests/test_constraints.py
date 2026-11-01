@@ -431,3 +431,58 @@ def test_string_closing_gives_valid_json(text: str) -> None:
     if text:
         _feed(string, text)
     json.loads('"' + text + string.closing())
+
+
+# --- leading space (key forced without it) -----------------------------
+
+
+@pytest.mark.parametrize("tokens", [(" -", "3,"), (" ", "-3,"), (" -3,",)])
+def test_number_accepts_one_leading_space(tokens: tuple[str, ...]) -> None:
+    """With allow_space, " -3," works however it is split."""
+    number = NumberConstraint(end=",", allow_space=True)
+    _feed(number, *tokens)
+    assert number.is_complete()
+
+
+def test_number_refuses_second_space() -> None:
+    """Only one space, and only before the number."""
+    number = NumberConstraint(end=",", allow_space=True)
+    assert not number.accepts("  3")
+    assert not number.accepts("3 ")
+    assert not number.accepts(" 3 ,")
+
+
+def test_number_space_off_by_default() -> None:
+    """Without allow_space, the space is still refused."""
+    assert not NumberConstraint(end=",").accepts(" 3")
+
+
+def test_boolean_accepts_one_leading_space() -> None:
+    """With allow_space, " true," is a valid boolean."""
+    boolean = ChoiceConstraint(options=["true", "false"], end=",",
+                               allow_space=True)
+    assert not boolean.accepts("  true")
+    _feed(boolean, " true,")
+    assert boolean.is_complete()
+
+
+def test_choice_closing_after_space() -> None:
+    """The forced closing ignores the leading space."""
+    boolean = ChoiceConstraint(options=["true", "false"], end="}",
+                               allow_space=True)
+    _feed(boolean, " f")
+    assert boolean.closing() == "alse}"
+
+
+def test_function_names_refuse_space() -> None:
+    """Names keep the default: a leading space would be a wrong name."""
+    assert not ChoiceConstraint(options=NAMES).accepts(" fn")
+
+
+def test_factory_allows_space_for_numbers_and_booleans() -> None:
+    """The factory turns the leading space on where the key needs it."""
+    for spec_type, text in [("number", " -2.5,"), ("integer", " 7,"),
+                            ("boolean", " false,")]:
+        spec = ParameterSpec.model_validate({"type": spec_type})
+        constraint = make_constraint(spec, ",")
+        assert constraint.accepts(text), spec_type

@@ -11,6 +11,10 @@ IM_START = "<|im_start|>"
 IM_END = "<|im_end|>"
 NO_THINKING = "<think>\n\n</think>\n\n"
 SYSTEM_ROLE = "You translate user requests into function calls."
+OUTPUT_FORMAT = (
+    "Answer with one JSON object: "
+    '{"name": <function name>, "parameters": {<argument>: <value>}}'
+)
 
 
 def _describe(fn: FunctionDefinition) -> str:
@@ -32,7 +36,10 @@ def build_prompt(functions: list[FunctionDefinition], user_prompt: str) -> str:
         model starts writing the answer.
     """
     function_lines = "\n".join(_describe(fn) for fn in functions)
-    system = f"{SYSTEM_ROLE}\nAvailable functions:\n{function_lines}"
+    system = (
+        f"{SYSTEM_ROLE}\nAvailable functions:\n{function_lines}\n"
+        f"{OUTPUT_FORMAT}"
+    )
     return (
         f"{IM_START}system\n{system}{IM_END}\n"
         f"{IM_START}user\n{user_prompt}{IM_END}\n"

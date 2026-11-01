@@ -62,11 +62,20 @@ class ChoiceConstraint(Constraint):
         generated: text accepted so far.
         end: text that closes the value; chosen by the caller, which
             knows what comes next in the JSON.
+        allow_space: accept one leading space (booleans, after a key
+            forced without its space). Never for function names.
     """
 
     options: list[str]
     generated: str = ""
     end: str = '"'
+    allow_space: bool = False
+
+    def _value(self, text: str) -> str:
+        """Drop the one allowed leading space, if any."""
+        if self.allow_space and text.startswith(" "):
+            return text[1:]
+        return text
 
     def accepts(self, text: str) -> bool:
         """Accept a start of an option, or a full option plus `end`.
@@ -75,7 +84,7 @@ class ChoiceConstraint(Constraint):
         "fn_add_numbers"), both continuing and closing are allowed:
         the model's logits decide.
         """
-        candidate = self.generated + text
+        candidate = self._value(self.generated + text)
         is_prefix = any(
             option.startswith(candidate) for option in self.options)
         is_closed = any(
@@ -89,13 +98,14 @@ class ChoiceConstraint(Constraint):
 
     def is_complete(self) -> bool:
         """Done once a full option is followed by the end marker."""
-        return any(
-            option + self.end == self.generated for option in self.options)
+        value = self._value(self.generated)
+        return any(option + self.end == value for option in self.options)
 
     def closing(self) -> str:
         """Finish the first option that starts with what was generated."""
-        option = next(o for o in self.options if o.startswith(self.generated))
-        return option[len(self.generated):] + self.end
+        value = self._value(self.generated)
+        option = next(o for o in self.options if o.startswith(value))
+        return option[len(value):] + self.end
 
 
 class NumberState(Enum):
@@ -176,6 +186,9 @@ class NumberConstraint(Constraint):
         length: number of characters of the number read so far.
         done: True once the end marker has been read.
         allow_fraction: False for "integer" (the "." is refused).
+        allow_space: accept one space before the number, so the model
+            can use its natural token " -" (see notes, phase 7).
+        spaced: True once that leading space has been read.
     """
 
     end: str
@@ -184,21 +197,29 @@ class NumberConstraint(Constraint):
     length: int = 0
     done: bool = False
     allow_fraction: bool = True
+    allow_space: bool = False
+    spaced: bool = False
 
-    def _run(self, text: str) -> tuple[NumberState, int, bool] | None:
+    def _run(
+        self, text: str
+    ) -> tuple[NumberState, int, bool, bool] | None:
         """Simulate `text` from the current state, without changing it.
 
         Args:
             text: text of a candidate token.
 
         Returns:
-            The (state, length, done) reached, or None if refused.
+            The (state, length, done, spaced) reached, or None if refused.
         """
         state, length, done = self.state, self.length, self.done
+        spaced = self.spaced
         for char in text:
             if done:
                 return None
-            if char == self.end:
+            if (char == " " and self.allow_space and not spaced
+                    and state is NumberState.START):
+                spaced = True
+            elif char == self.end:
                 if state not in ACCEPTING:
                     return None
                 done = True
@@ -212,7 +233,7 @@ class NumberConstraint(Constraint):
                     return None
                 state = next_state
                 length += 1
-        return state, length, done
+        return state, length, done, spaced
 
     def accepts(self, text: str) -> bool:
         """Accept number characters, then the marker once complete."""
@@ -228,7 +249,7 @@ class NumberConstraint(Constraint):
         result = self._run(text)
         if result is None:
             raise DecodingError(f"number constraint refused {text!r}")
-        self.state, self.length, self.done = result
+        self.state, self.length, self.done, self.spaced = result
 
     def is_complete(self) -> bool:
         """Done once the end marker has been read."""
@@ -342,6 +363,8 @@ def make_constraint(spec: ParameterSpec, end: str) -> Constraint:
         spec: declared type of the parameter.
         end: what follows the value in the JSON ("," or "}"); used by
             numbers and booleans. A string always ends on its own quote.
+            Numbers and booleans accept one leading space: the caller
+            forces their key without it.
 
     Returns:
         A fresh constraint for that type.
@@ -351,11 +374,13 @@ def make_constraint(spec: ParameterSpec, end: str) -> Constraint:
             ParamType already rejects other types at load time.
     """
     if spec.type == "number":
-        return NumberConstraint(end=end)
+        return NumberConstraint(end=end, allow_space=True)
     if spec.type == "integer":
-        return NumberConstraint(end=end, allow_fraction=False)
+        return NumberConstraint(end=end, allow_fraction=False,
+                                allow_space=True)
     if spec.type == "boolean":
-        return ChoiceConstraint(options=["true", "false"], end=end)
+        return ChoiceConstraint(options=["true", "false"], end=end,
+                                allow_space=True)
     if spec.type == "string":
         return StringConstraint()
     raise DecodingError(f"unsupported parameter type: {spec.type!r}")
