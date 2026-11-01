@@ -1,0 +1,18 @@
+[
+  {"prompt": "What time is it?"},
+  {"prompt": "Tell me the current time please"},
+  {"prompt": "What is 12 plus 30?"},
+  {"prompt": "Add 1000000 and 0.5"},
+  {"prompt": "Multiply 7 by -3"},
+  {"prompt": "What is 2.5 times 4?"},
+  {"prompt": "Convert 25 degrees Celsius to Fahrenheit"},
+  {"prompt": "Convert -40 degrees Celsius to Kelvin"},
+  {"prompt": "What is 36.6 Celsius in Fahrenheit?"},
+  {"prompt": "Repeat 'ha' 3 times"},
+  {"prompt": "Say hello world five times"},
+  {"prompt": "Repeat the path C:\\temp twice"},
+  {"prompt": "Create a user named alice who is 30 years old and is an admin"},
+  {"prompt": "Create a non-admin user bob, aged 17"},
+  {"prompt": "Count the words in: Say \"hi\" to everyone"},
+  {"prompt": "How many words are in the sentence the quick brown fox"}
+]

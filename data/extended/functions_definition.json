@@ -1,0 +1,51 @@
+[
+  {
+    "name": "fn_get_current_time",
+    "description": "Return the current time.",
+    "parameters": {},
+    "returns": {"type": "string"}
+  },
+  {
+    "name": "fn_add_numbers",
+    "description": "Add two numbers together and return their sum.",
+    "parameters": {"a": {"type": "number"}, "b": {"type": "number"}},
+    "returns": {"type": "number"}
+  },
+  {
+    "name": "fn_multiply_numbers",
+    "description": "Multiply two numbers and return their product.",
+    "parameters": {"a": {"type": "number"}, "b": {"type": "number"}},
+    "returns": {"type": "number"}
+  },
+  {
+    "name": "fn_convert_temperature",
+    "description": "Convert a temperature in Celsius to Fahrenheit, or to Kelvin when to_fahrenheit is false.",
+    "parameters": {
+      "celsius": {"type": "number"},
+      "to_fahrenheit": {"type": "boolean"}
+    },
+    "returns": {"type": "number"}
+  },
+  {
+    "name": "fn_repeat_text",
+    "description": "Repeat a text a given number of times.",
+    "parameters": {"text": {"type": "string"}, "times": {"type": "integer"}},
+    "returns": {"type": "string"}
+  },
+  {
+    "name": "fn_create_user",
+    "description": "Create a user account with a username, an age and an admin flag.",
+    "parameters": {
+      "username": {"type": "string"},
+      "age": {"type": "integer"},
+      "is_admin": {"type": "boolean"}
+    },
+    "returns": {"type": "boolean"}
+  },
+  {
+    "name": "fn_count_words",
+    "description": "Count the words in a text.",
+    "parameters": {"text": {"type": "string"}},
+    "returns": {"type": "integer"}
+  }
+]

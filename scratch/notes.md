@@ -1369,3 +1369,193 @@ le fichier écrit et les codes de sortie, pas le modèle.
 - [x] `_convert`, branchement dans `__main__.py`, politique d'échec (§35)
 - [x] `make run` → fichier valide, 11 entrées (§36)
 - [ ] Fonction sans paramètre : à tester
+
+---
+
+# Phase 7 — Qualité des réponses
+
+## 37. Qu'est-ce qu'une regex ?
+
+Une **expression régulière** est un **motif** qui décrit du texte (une forme, pas un mot précis). Module Python : `re`
+(stdlib, rien à installer).
+
+| Motif | Correspond à |
+|---|---|
+| `\d` / `[0-9]` | un chiffre |
+| `+` / `*` / `?` | au moins une fois / zéro ou plus / facultatif |
+| `[aeiou]` | un caractère de la liste |
+| `\s` | un espace |
+| `\|` | « ou » |
+| `( )` | un groupe |
+
+- `re.sub(pattern, repl, string)` remplace tout ce qui correspond. **Ordre ≠ celui de la définition** de
+  `fn_substitute_string_with_regex(source_string, regex, replacement)` → passer par les noms.
+- `re.error` : levée si le motif est mal formé (`([0-9]+` sans parenthèse fermante).
+- En JSON, `\d+` s'écrit `"\\d+"` (le `\` est doublé). `r"\d+"` en Python = *raw string*.
+
+### Le LLM n'exécute pas la fonction
+
+```
+"What is the sum of 2 and 3?" → {"name": "fn_add_numbers", "parameters": {"a": 2.0, "b": 3.0}} → (autre programme) → 5
+                                └────────── NOTRE PROGRAMME ──────────┘
+```
+Le modèle **traduit** la demande en appel ; il ne calcule pas (il est mauvais pour ça). En phase 1, sans contraintes,
+il répondait `{"name": "sum", "parameters": {"value": 5}}` : il avait calculé au lieu d'appeler.
+`re.sub` n'apparaît **que** dans le script d'évaluation (`scratch/`), pour comparer deux regex écrites différemment.
+
+## 38. Mesurer : `tests/expected.json` et `scratch/14_evaluate.py`
+
+**Règle de la phase : ne rien changer sans mesurer, un changement à la fois, noter chaque essai.**
+
+- `tests/expected.json` : les 11 réponses parfaites, écrites à la main.
+- Choix d'interprétation (à justifier dans le README) :
+  - **les guillemets/apostrophes de la phrase sont de la ponctuation, pas des données** : `s = hello`, pas `'hello'` ;
+    `source_string = The cat sat…`, sans apostrophes.
+  - « with asterisks » = le **symbole** `*` (le mot `asterisks` donnerait `Prasterisksgr…`). À l'inverse, « with
+    NUMBERS » = le mot lui-même.
+  - `[aeiou]` ou `[aeiouAEIOU]` : même résultat ici (pas de voyelle majuscule dans `Programming is fun`).
+- Le script indexe les résultats par prompt (`{r["prompt"]: r for r in ...}`, `.get()` → `None` si omis), compare le
+  nom, puis les paramètres : **regex → comparer le résultat de `re.sub`**, sinon `got == want` (`2 == 2.0` en Python).
+- Pièges : `params.regex` sur un **dict** (→ `params["regex"]`), `param` sans `s`, clé `string` au lieu de
+  `source_string`, `errors.append(...)` laissé tel quel (ajoute `Ellipsis`), passer l'entrée entière au lieu de
+  `got["parameters"]` (→ `KeyError`).
+
+## 39. Journal des essais
+
+| # | Changement | Score | Temps | Observation |
+|---|---|---|---|---|
+| 0 | état de la phase 6 | **8/11 (73 %)** | 2 min 14 | 11/11 noms ; les 3 regex se répètent jusqu'à la limite ; `replacement: ' * '` |
+| A | consigne de format en fin de message system : `Answer with one JSON object: {"name": ..., "parameters": {...}}` | 8/11 (73 %) | — | aucun gain ; seule la regex `cat` raccourcit (`cat\b\w+`) |
+| B | **troncature des tokens qui débordent** (décodeur) | **10/11 (91 %)** | **1 min 28** | les 3 regex correctes (`([0-9]+)`, `([aeiou])`, `cat`) ; reste `replacement: 'asterisk'` |
+| C | clé des nombres/booléens forcée **sans** son espace + `allow_space` (§42) | 10/11 (91 %) ; élargi **12/16 (75 %)** (avant 62 %) | — | les nombres négatifs reviennent ; restent booléens et chaînes |
+
+### La vraie cause des regex trop longues (diagnostic de l'essai B)
+
+Les 6 tokens préférés du modèle, **sans filtre** :
+```
+après  "regex": "\d+   →  '",' 19.6   '.",' 18.4   '\\' 18.1   '|\' 17.7 ...
+après  "name": "shrek  →  '"}}' 30.8  '"}' 22.0    '"' 20.0 ...
+```
+- Le modèle **veut fermer** la chaîne, avec un token `",` (guillemet **et** virgule). Notre politique « aucun
+  débordement » (phase 5) le **refuse** → le meilleur token **permis** est `\\` → il continue la regex, encore et encore.
+- Pour `shrek`, le `"` seul arrivait juste derrière, devant tout contenu → ça fermait. Pour la regex, du contenu
+  (`\\`, `|`) passait devant.
+- **C'est notre propre règle qui fabriquait l'erreur**, pas le prompt. → matière « Challenges » du README.
+
+### La correction : `_closing_prefix` dans le décodeur
+
+Si un candidat est refusé mais que son **plus long début termine la valeur** (`",` → `"`), on garde ce début : **le
+modèle a voté pour fermer**.
+
+```python
+for size in range(len(text) - 1, 0, -1):          # du plus long au plus court
+    prefix = text[:size]
+    if not constraint.accepts(prefix): continue
+    trial = constraint.model_copy(deep=True)       # copie indépendante pour essayer
+    trial.advance(prefix)
+    if trial.is_complete(): return prefix
+```
+
+- **Seulement si le début termine la valeur** : sinon on fabriquerait des morceaux jamais proposés par le modèle.
+- `model_copy(deep=True)` (pydantic) : essayer `advance` sans toucher la vraie contrainte.
+- Le début n'est pas forcément **un** token → `_best_allowed` renvoie une **liste** d'ids (`engine.encode(prefix)`),
+  et `decode_value` fait `ids.extend(token_ids)` (permis : `ids` y est une copie locale).
+- Option écartée : accepter `",` en entier puis retirer la `,` du segment forcé suivant (concepts §8) — chaque
+  contrainte devrait connaître le texte qui la suit, bien plus complexe.
+- **Aucune contrainte modifiée** : la validité reste garantie par construction.
+- Effet secondaire : **plus rapide** (les valeurs se ferment tôt, moins d'appels au modèle).
+
+### Pièges rencontrés
+
+- `trial.decode_value()` : `decode_value` est la fonction du décodeur, pas une méthode de contrainte → `is_complete()`.
+- `append` d'une liste → liste imbriquée `[1, 2, [3, 4]]` ; `extend` → `[1, 2, 3, 4]`.
+- `token_id` renommé `token_ids` d'un côté seulement → `NameError`.
+- `OUTPUT_FORMAT` en f-string : les `{}` du JSON sont lus comme du code → `SyntaxError`. **f-string seulement s'il y a
+  une variable à insérer.** Guillemets doubles dans le texte → entourer d'apostrophes.
+- Deux chaînes ne sont collées que **entre parenthèses** : sans elles, la 2ᵉ ligne est une nouvelle instruction →
+  `IndentationError: unexpected indent`.
+- `make run` en erreur → le score affiché vient de **l'ancien** fichier de sortie : toujours vérifier `make run` d'abord.
+
+## 40. Tests du décodeur (`tests/test_decoder.py`)
+
+`FakeEngine(Engine)` : scores fixés à l'avance, pas à pas, sur un vocabulaire de 5 tokens (`"`, `",`, `a`, `b`, `x`)
+écrit dans `tmp_path`. Aucun modèle chargé.
+
+| Test | Vérifie |
+|---|---|
+| `test_picks_best_allowed_token` | le meilleur token refusé est sauté |
+| `test_overflowing_token_is_cut_to_its_closing_start` | `",` est coupé en `"` et termine la chaîne |
+| `test_cut_only_when_the_start_ends_the_value` | pas de coupe en valeur partielle |
+| `test_max_tokens_stops_the_loop` | la boucle s'arrête à `max_tokens` |
+| `test_input_ids_are_not_modified` | la liste de l'appelant n'est pas modifiée |
+| `test_stuck_constraint_raises` | impasse → `DecodingError` |
+
+Total : **145 tests**.
+
+## 41. Le jeu de test élargi (`data/extended/`, `tests/expected_extended.json`)
+
+Le correcteur **remplacera** les fichiers d'entrée : 91 % sur nos 11 prompts ne garantit rien. Le jeu élargi couvre
+ce que le jeu fourni ne teste jamais.
+
+| Fonction | Ce qu'elle teste |
+|---|---|
+| `fn_get_current_time()` | **aucun paramètre** → `"parameters": {}` |
+| `fn_add_numbers` / `fn_multiply_numbers` | deux fonctions proches : le choix du nom |
+| `fn_convert_temperature(celsius: number, to_fahrenheit: boolean)` | **booléen**, nombres négatifs et décimaux |
+| `fn_repeat_text(text: string, times: integer)` | **integer**, nombre en lettres (« five »), `C:\temp` (échappement `\\`) |
+| `fn_create_user(username: string, age: integer, is_admin: boolean)` | **3 paramètres** de types mélangés |
+| `fn_count_words(text: string)` | **guillemets dans la chaîne** (`Say "hi" to everyone`) |
+
+16 prompts. Lancer et mesurer :
+```bash
+uv run python -m src --functions_definition data/extended/functions_definition.json \
+    --input data/extended/function_calling_tests.json --output data/output/extended_results.json
+uv run python -m scratch.14_evaluate data/output/extended_results.json tests/expected_extended.json
+```
+(le script d'évaluation prend maintenant les chemins en argument, avec le jeu fourni par défaut)
+
+### Premier résultat : 16/16 noms, **10/16 appels (62 %)**
+
+Ce qui marche : les noms (add et multiply distingués), la fonction sans paramètre (`{}` ✅), les integer, `five` → `5`,
+les grands nombres, `C:\temp`. Ce qui rate, en 3 familles :
+
+1. **le signe moins disparaît** : `-3` → `3`, `-40` → `40` ;
+2. **les booléens sont toujours `false`** (« to Fahrenheit » → `to_fahrenheit: false`) ;
+3. **des chaînes approximatives** : `Say hello world` (prompt ambigu), `Say 'hi'` au lieu de `Say "hi"`.
+
+## 42. Essai C : la clé forcée sans son espace
+
+### Diagnostic (famille 1)
+
+```
+après  "b": (espace forcé par nous)  →  '3' 36.1   '2' 27.7 ...     ← plus de trace du -
+après  "b":  (sans espace)           →  ' -' 37.2  ' ' 25.2 ...     ← il voulait écrire " -"
+```
+Dans le texte naturel, Qwen écrit `": -3"` avec le token **` -`** (espace + moins collés). En forçant l'espace seul,
+on le place dans une situation jamais vue (un espace déjà écrit, isolé) et il « oublie » le signe. C'est la subtilité
+de tokenisation des segments forcés (concepts §6, notes §6) qui nous rattrape.
+
+### Correction
+
+- Pipeline : pour les nombres et booléens, la clé est forcée **sans** l'espace final (`"b":`). Pour une chaîne :
+  `"name": "` (l'espace et le guillemet d'ouverture restent forcés).
+- `NumberConstraint` et `ChoiceConstraint` : nouveau champ **`allow_space: bool = False`** = accepter **un** espace en
+  tête. `NumberConstraint` a aussi `spaced` (l'espace a-t-il déjà été lu ?), donc `_run` renvoie 4 valeurs.
+- `ChoiceConstraint._value(text)` retire l'espace permis avant de comparer aux options (dans `accepts`, `is_complete`
+  et `closing`).
+- `make_constraint` active `allow_space` pour `number`, `integer` et `boolean`. **Jamais** pour les noms de fonction
+  (défaut `False`) : `" fn_greet"` serait un nom faux.
+- 9 tests : `" -" + "3,"`, `" " + "-3,"`, `" -3,"` ; un 2ᵉ espace refusé ; désactivé par défaut ; booléen `" true,"` ;
+  `closing()` après l'espace ; noms qui refusent l'espace ; la fabrique.
+- Piège mypy : `ParameterSpec(type=spec_type)` avec un `str` quelconque est refusé (le champ est un `Literal`) →
+  `ParameterSpec.model_validate({"type": spec_type})`.
+
+### Résultat
+
+| Jeu | Avant | Après |
+|---|---|---|
+| fourni (11) | 10/11 (91 %) | **10/11 (91 %)** — pas de régression |
+| élargi (16) | 10/16 (62 %) | **12/16 (75 %)** — `-3` et `-40` corrects |
+
+Leçon pour le README : **la façon de découper le texte forcé compte**. Forcer un morceau que le modèle aurait écrit
+autrement (ici l'espace seul) le déstabilise, même si le texte final est identique.

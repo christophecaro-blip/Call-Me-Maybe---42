@@ -490,7 +490,7 @@ et que tu mesures combien sont **corrects**.
   4. forcer `}}`
   5. `json.loads(texte_généré)` → conversion des types (`number` → `float`) → `FunctionCall`
 - [x] Optimisation immédiate : les segments forcés sont ajoutés **sans** appel au modèle.
-- [ ] Fonction sans paramètre : `"parameters": {}` — tester.
+- [x] Fonction sans paramètre : `"parameters": {}` — tester.
 - [x] `try/except` par prompt : un échec → log stderr + on continue (décider : on omet l'entrée ?
       on écrit quand même un appel ? → justifier).
 - [x] Remplacer le faux pipeline de la phase 2.
@@ -508,13 +508,13 @@ les clés `prompt`, `name`, `parameters` avec les bons types.
 🎯 Mesurer, puis améliorer la justesse — pas seulement la validité.
 
 🔧 Étapes
-- [ ] Écrire à la main un fichier `tests/expected.json` (prompt → réponse attendue). Pour les
+- [x] Écrire à la main un fichier `tests/expected.json` (prompt → réponse attendue). Pour les
       3 prompts regex, plusieurs réponses peuvent être justes (`\d+` ou `[0-9]+`,
       `[aeiouAEIOU]` ou `[aeiou]`) : ton script doit le tolérer, par exemple en **appliquant**
       la regex obtenue avec `re.sub` et en comparant le résultat au résultat attendu.
       L'appel à `fn_greet` doit donner `{"name": "shrek"}` et la somme `{"a": 2.0, "b": 3.0}`.
-- [ ] Script d'évaluation : % nom correct, % arguments corrects, liste des erreurs.
-- [ ] **Élargir le jeu de test** avec tes propres prompts et fonctions (le correcteur changera les
+- [x] Script d'évaluation : % nom correct, % arguments corrects, liste des erreurs.
+- [x] **Élargir le jeu de test** avec tes propres prompts et fonctions (le correcteur changera les
       fichiers !) : multi-paramètres, booléens, strings avec guillemets, nombres négatifs/décimaux,
       grands nombres, prompts ambigus, formulations variées.
 - [ ] Itérer sur le prompt système (une variable à la fois, mesurer à chaque fois) :
